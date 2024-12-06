@@ -55,14 +55,14 @@ function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
 
 // Usually mouse position (either x or y) is from 0 to canvas
 // width/height. This function normalizes it to [-0.5, 0.5] on the
-// shorter direction.
+// shorter direction. (0, 0) is set to be the center of canvas.
 function getNormalizedMousePos(move_event, canvas)
 {
     const rect = canvas.getBoundingClientRect();
     const size = Math.min(rect.width, rect.height);
-    mouse_x = (move_event.clientX - rect.left) / size - 0.5;
+    mouse_x = (move_event.clientX - rect.left - (rect.width - size) * 0.5) / size - 0.5;
     // bottom is 0 in WebGL
-    mouse_y = (rect.height - (move_event.clientY - rect.top)) / size - 0.5;
+    mouse_y = (rect.height - (move_event.clientY - rect.top) - (rect.height - size) * 0.5) / size - 0.5;
     return [mouse_x, mouse_y];
 }
 
