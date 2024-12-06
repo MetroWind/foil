@@ -1,0 +1,4 @@
+- https://www.cyanilux.com/tutorials/holofoil-card-shader-breakdown/
+- https://www.alanzucconi.com/2017/07/15/improving-the-rainbow/
+- https://lazyfoo.net/tutorials/SDL/51_SDL_and_modern_opengl/index.php
+- https://webgl2fundamentals.org
