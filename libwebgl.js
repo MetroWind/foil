@@ -143,26 +143,48 @@ function resizeCanvas(canvas, gl)
     gl.viewport(0, 0, width, height);
 }
 
-// Push some JavaScript array “data” into a new vertex array, whose
-// corresponding attribute is named “attr_name”. Return the new vertex
-// array.
-function createVertexArray(
-    gl, program, data, attr_name, {
+class VertexArray
+{
+    constructor(gl, data)
+    {
+        this.buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        this.vertex_array = gl.createVertexArray();
+        this.gl = gl
+    }
+
+    use(program, attr_name, {
         component_count = 3,
-        num_type = gl.FLOAT,
+        num_type = this.gl.FLOAT,
         normalize = false,
         stride = 0,
         offset = 0,
     })
+    {
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
+        var position_ref = this.gl.getAttribLocation(program, attr_name);
+        this.gl.bindVertexArray(this.vertex_array);
+        this.gl.enableVertexAttribArray(position_ref);
+        this.gl.vertexAttribPointer(position_ref, component_count, num_type,
+                               normalize, stride, offset);
+    }
+}
+
+class Model
 {
-    let vert_buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vert_buf);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-    var position_ref = gl.getAttribLocation(program, attr_name);
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-    gl.enableVertexAttribArray(position_ref);
-    gl.vertexAttribPointer(position_ref, component_count, num_type,
-                           normalize, stride, offset);
-    return vao;
+    constructor(gl, vertices_coords, texture_coords)
+    {
+        this.vertices = new VertexArray(gl, new Float32Array(vertices_coords));
+        this.texture_coords = new VertexArray(gl, new Float32Array(texture_coords));
+        this.vertex_count = vertices_coords.length / 3;
+    }
+}
+
+class Scene
+{
+    constructor(models)
+    {
+        this.models = models;
+    }
 }

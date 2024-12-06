@@ -1,4 +1,15 @@
-function drawScene(canvas, gl, program, model, camera_rotation=[0.0, 0.0, 0.0])
+function initScene(gl, obj_model)
+{
+    let models = [];
+    for(const geo of obj_model.geometries)
+    {
+        models.push(new Model(gl, geo.data.position, geo.data.texcoord));
+    }
+
+    return new Scene(models);
+}
+
+function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
 {
     const mat4 = glMatrix.mat4;
     resizeCanvas(canvas, gl);
@@ -34,15 +45,11 @@ function drawScene(canvas, gl, program, model, camera_rotation=[0.0, 0.0, 0.0])
     gl.uniformMatrix4fv(gl.getUniformLocation(program, "u_view"),
                         false, model_view_matrix);
 
-    for(const geo of model.geometries)
+    for(const model of scene.models)
     {
-        const vertices = createVertexArray(
-            gl, program, new Float32Array(geo.data.position), "a_position", {});
-        const texture_coords = createVertexArray(
-            gl, program, new Float32Array(geo.data.texcoord), "a_texcoord",
-            {component_count: 2});
-        gl.bindVertexArray(vertices);
-        gl.drawArrays(gl.TRIANGLES, 0, geo.data.position.length / 3);
+        model.texture_coords.use(program, "a_texcoord", {component_count: 2, normalize: true});
+        model.vertices.use(program, "a_position", {});
+        gl.drawArrays(gl.TRIANGLES, 0, model.vertex_count);
     }
 }
 
@@ -100,13 +107,15 @@ function main()
     let then = 0;
     let camera_rotation = [0.0, 0.0, 0.0]
     // Draw the scene repeatedly
+
+    const scene = initScene(gl, model);
     function render(now)
     {
         now *= 0.001; // convert to seconds
         deltaTime = now - then;
         then = now;
 
-        drawScene(canvas, gl, program, model, camera_rotation);
+        drawScene(canvas, gl, program, scene, camera_rotation);
         requestAnimationFrame(render);
     }
     requestAnimationFrame(render, camera_rotation);
