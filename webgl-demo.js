@@ -6,6 +6,8 @@ function initScene(gl, obj_model)
         models.push(new Model(gl, geo.data.position, geo.data.texcoord));
     }
 
+    models[0].addTexture("test-uv.png");
+
     return new Scene(models);
 }
 
@@ -47,8 +49,9 @@ function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
 
     for(const model of scene.models)
     {
-        model.texture_coords.use(program, "a_texcoord", {component_count: 2, normalize: true});
+        model.texture_coords.use(program, "a_texcoord", {component_count: 2});
         model.vertices.use(program, "a_position", {});
+        model.textures[0].use();
         gl.drawArrays(gl.TRIANGLES, 0, model.vertex_count);
     }
 }

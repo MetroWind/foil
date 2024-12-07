@@ -171,6 +171,35 @@ class VertexArray
     }
 }
 
+class Texture
+{
+    constructor(gl, url)
+    {
+        this.texture = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0 + 0);
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        // Fill the texture with a 1x1 blue pixel.
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                      new Uint8Array([0, 0, 255, 255]));
+        // Asynchronously load an image
+        this.image = new Image();
+        this.image.src = url;
+        this.image.addEventListener('load', function() {
+            console.debug("Texture loaded.");
+            // Now that the image has loaded make copy it to the texture.
+            gl.bindTexture(gl.TEXTURE_2D, this.texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.image);
+            gl.generateMipmap(gl.TEXTURE_2D);
+        });
+        this.gl = gl;
+    }
+
+    use()
+    {
+        this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    }
+}
+
 class Model
 {
     constructor(gl, vertices_coords, texture_coords)
@@ -178,6 +207,13 @@ class Model
         this.vertices = new VertexArray(gl, new Float32Array(vertices_coords));
         this.texture_coords = new VertexArray(gl, new Float32Array(texture_coords));
         this.vertex_count = vertices_coords.length / 3;
+        this.textures = [];
+        this.gl = gl;
+    }
+
+    addTexture(url)
+    {
+        this.textures.push(new Texture(this.gl, url));
     }
 }
 
