@@ -7,7 +7,13 @@ function initScene(gl, program, obj_model)
                               geo.data.texcoord));
     }
 
-    models[0].addTexture("test-uv.png");
+    // Texture 0 contains the printed card; texture 1 controls where and in
+    // which direction the holographic foil diffracts light.
+    models[0].addTexture("card_texture.png", {flip_y: true});
+    models[0].addTexture("foil_mask.png", {
+        flip_y: true,
+        placeholder_color: [0, 0, 0, 255],
+    });
 
     return new Scene(models);
 }
@@ -52,6 +58,7 @@ function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
     {
         model.vertex_array.use();
         model.textures[0].use(program, "u_texture");
+        model.textures[1].use(program, "u_foil_mask", 1);
         gl.drawArrays(gl.TRIANGLES, 0, model.vertex_count);
     }
 }

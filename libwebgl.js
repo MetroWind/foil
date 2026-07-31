@@ -184,22 +184,40 @@ class VertexArray
 class Texture
 {
     /** Create a texture and load its image asynchronously. */
-    constructor(gl, url)
+    constructor(gl, url, {
+        // OBJ texture coordinates use the opposite vertical convention from
+        // the imported card artwork.
+        flip_y = false,
+        // A per-texture placeholder keeps sampling valid before image load.
+        placeholder_color = [0, 0, 255, 255],
+    } = {})
     {
         this.texture = gl.createTexture();
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        // Fill the texture with a 1x1 blue pixel.
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // Keep the texture complete while its image loads.
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
-                      gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
+                      gl.UNSIGNED_BYTE,
+                      new Uint8Array(placeholder_color));
         // Asynchronously load an image
         this.image = new Image();
         this.image.addEventListener('load', (event) => {
             console.debug("Texture loaded.");
             // Now that the image has loaded, copy it to the texture.
             gl.bindTexture(gl.TEXTURE_2D, this.texture);
+            const previous_flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip_y);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
                           gl.UNSIGNED_BYTE, event.target);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, previous_flip);
+            // Use mipmaps only after all levels can be generated from the
+            // loaded image. Until then, the linear-filtered placeholder works.
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+                             gl.LINEAR_MIPMAP_LINEAR);
             gl.generateMipmap(gl.TEXTURE_2D);
         });
         this.image.src = url;
@@ -233,9 +251,9 @@ class Model
     }
 
     /** Add a texture to this model. */
-    addTexture(url)
+    addTexture(url, options = {})
     {
-        this.textures.push(new Texture(this.gl, url));
+        this.textures.push(new Texture(this.gl, url, options));
     }
 }
 
