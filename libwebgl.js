@@ -145,16 +145,16 @@ function resizeCanvas(canvas, gl)
 
 class VertexArray
 {
-    constructor(gl, data)
+    /** Create a complete set of vertex inputs for a drawable. */
+    constructor(gl)
     {
-        this.buffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
         this.vertex_array = gl.createVertexArray();
-        this.gl = gl
+        this.buffers = [];
+        this.gl = gl;
     }
 
-    use(program, attr_name, {
+    /** Add one buffered attribute to this vertex array. */
+    addAttribute(program, attr_name, data, {
         component_count = 3,
         num_type = this.gl.FLOAT,
         normalize = false,
@@ -162,17 +162,28 @@ class VertexArray
         offset = 0,
     })
     {
-        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
-        var position_ref = this.gl.getAttribLocation(program, attr_name);
+        const buffer = this.gl.createBuffer();
+        const attribute_ref = this.gl.getAttribLocation(program, attr_name);
+
         this.gl.bindVertexArray(this.vertex_array);
-        this.gl.enableVertexAttribArray(position_ref);
-        this.gl.vertexAttribPointer(position_ref, component_count, num_type,
-                               normalize, stride, offset);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, data, this.gl.STATIC_DRAW);
+        this.gl.enableVertexAttribArray(attribute_ref);
+        this.gl.vertexAttribPointer(attribute_ref, component_count, num_type,
+                                    normalize, stride, offset);
+        this.buffers.push(buffer);
+    }
+
+    /** Bind this vertex array for drawing. */
+    use()
+    {
+        this.gl.bindVertexArray(this.vertex_array);
     }
 }
 
 class Texture
 {
+    /** Create a texture and load its image asynchronously. */
     constructor(gl, url)
     {
         this.texture = gl.createTexture();
@@ -183,41 +194,45 @@ class Texture
                       gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
         // Asynchronously load an image
         this.image = new Image();
-        this.image.src = url;
-        this.image.addEventListener('load', function(e) {
+        this.image.addEventListener('load', (event) => {
             console.debug("Texture loaded.");
-            // Now that the image has loaded make copy it to the texture.
+            // Now that the image has loaded, copy it to the texture.
             gl.bindTexture(gl.TEXTURE_2D, this.texture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, e.target.naturalWidth,
-                          e.target.naturalHeight, 0, gl.RGBA,
-                          gl.UNSIGNED_BYTE, e.target);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+                          gl.UNSIGNED_BYTE, event.target);
             gl.generateMipmap(gl.TEXTURE_2D);
         });
+        this.image.src = url;
         this.gl = gl;
     }
 
-    use()
+    /** Bind this texture to a sampler for drawing. */
+    use(program, uniform_name, unit = 0)
     {
-        this.gl.activeTexture(this.gl.TEXTURE0);
+        this.gl.activeTexture(this.gl.TEXTURE0 + unit);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
-        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.image.naturalWidth,
-                      this.image.naturalHeight, 0, this.gl.RGBA,
-                      this.gl.UNSIGNED_BYTE, this.image);
-        this.gl.generateMipmap(this.gl.TEXTURE_2D);
+        const uniform_ref = this.gl.getUniformLocation(program, uniform_name);
+        this.gl.uniform1i(uniform_ref, unit);
     }
 }
 
 class Model
 {
-    constructor(gl, vertices_coords, texture_coords)
+    /** Create a textured model from position and texture coordinates. */
+    constructor(gl, program, vertices_coords, texture_coords)
     {
-        this.vertices = new VertexArray(gl, new Float32Array(vertices_coords));
-        this.texture_coords = new VertexArray(gl, new Float32Array(texture_coords));
+        this.vertex_array = new VertexArray(gl);
+        this.vertex_array.addAttribute(program, "a_position",
+                                       new Float32Array(vertices_coords), {});
+        this.vertex_array.addAttribute(program, "a_texcoord",
+                                       new Float32Array(texture_coords),
+                                       {component_count: 2});
         this.vertex_count = vertices_coords.length / 3;
         this.textures = [];
         this.gl = gl;
     }
 
+    /** Add a texture to this model. */
     addTexture(url)
     {
         this.textures.push(new Texture(this.gl, url));

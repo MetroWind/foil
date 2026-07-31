@@ -1,9 +1,10 @@
-function initScene(gl, obj_model)
+function initScene(gl, program, obj_model)
 {
     let models = [];
     for(const geo of obj_model.geometries)
     {
-        models.push(new Model(gl, geo.data.position, geo.data.texcoord));
+        models.push(new Model(gl, program, geo.data.position,
+                              geo.data.texcoord));
     }
 
     models[0].addTexture("test-uv.png");
@@ -49,9 +50,8 @@ function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
 
     for(const model of scene.models)
     {
-        model.texture_coords.use(program, "a_texcoord", {component_count: 2});
-        model.vertices.use(program, "a_position", {});
-        model.textures[0].use();
+        model.vertex_array.use();
+        model.textures[0].use(program, "u_texture");
         gl.drawArrays(gl.TRIANGLES, 0, model.vertex_count);
     }
 }
@@ -111,7 +111,7 @@ function main()
     let camera_rotation = [0.0, 0.0, 0.0]
     // Draw the scene repeatedly
 
-    const scene = initScene(gl, model);
+    const scene = initScene(gl, program, model);
     function render(now)
     {
         now *= 0.001; // convert to seconds
