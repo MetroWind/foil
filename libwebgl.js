@@ -176,19 +176,21 @@ class Texture
     constructor(gl, url)
     {
         this.texture = gl.createTexture();
-        gl.activeTexture(gl.TEXTURE0 + 0);
+        gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         // Fill the texture with a 1x1 blue pixel.
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-                      new Uint8Array([0, 0, 255, 255]));
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+                      gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 255, 255]));
         // Asynchronously load an image
         this.image = new Image();
         this.image.src = url;
-        this.image.addEventListener('load', function() {
+        this.image.addEventListener('load', function(e) {
             console.debug("Texture loaded.");
             // Now that the image has loaded make copy it to the texture.
             gl.bindTexture(gl.TEXTURE_2D, this.texture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.image);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, e.target.naturalWidth,
+                          e.target.naturalHeight, 0, gl.RGBA,
+                          gl.UNSIGNED_BYTE, e.target);
             gl.generateMipmap(gl.TEXTURE_2D);
         });
         this.gl = gl;
@@ -196,7 +198,12 @@ class Texture
 
     use()
     {
+        this.gl.activeTexture(this.gl.TEXTURE0);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.image.naturalWidth,
+                      this.image.naturalHeight, 0, this.gl.RGBA,
+                      this.gl.UNSIGNED_BYTE, this.image);
+        this.gl.generateMipmap(this.gl.TEXTURE_2D);
     }
 }
 
