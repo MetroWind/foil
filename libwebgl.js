@@ -181,6 +181,32 @@ class VertexArray
     }
 }
 
+/** Color-space behavior for texture resources. */
+const TEXTURE_ROLE = Object.freeze({
+    COLOR: "color",
+    DATA: "data",
+});
+
+/** Foil variants understood by the fragment shader. */
+const FOIL_KIND = Object.freeze({
+    WIDE_ANGLE: 0,
+    DIRECTIONAL: 1,
+});
+
+/** Convert an artist-facing foil-kind name into its shader value. */
+function parseFoilKind(kind)
+{
+    if(kind == "wide_angle")
+    {
+        return FOIL_KIND.WIDE_ANGLE;
+    }
+    if(kind == "directional")
+    {
+        return FOIL_KIND.DIRECTIONAL;
+    }
+    throw(new Error(`Unknown foil kind: ${kind}`));
+}
+
 class Texture
 {
     /** Create a texture and load its image asynchronously. */
@@ -189,10 +215,30 @@ class Texture
         // the imported card artwork.
         flip_y = false,
         // A per-texture placeholder keeps sampling valid before image load.
-        placeholder_color = [0, 0, 255, 255],
+        placeholder_color = null,
+        role = TEXTURE_ROLE.COLOR,
     } = {})
     {
+        if(!Object.values(TEXTURE_ROLE).includes(role))
+        {
+            throw(new Error(`Unknown texture role: ${role}`));
+        }
+
+        if(placeholder_color == null)
+        {
+            placeholder_color = role == TEXTURE_ROLE.DATA
+                ? [0, 0, 0, 0]
+                : [0, 0, 255, 255];
+        }
+
         this.texture = gl.createTexture();
+        this.load_listeners = [];
+        this.width = 0;
+        this.height = 0;
+        this.role = role;
+        this.url = url;
+        this.gl = gl;
+
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -200,28 +246,65 @@ class Texture
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         // Keep the texture complete while its image loads.
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA,
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA,
                       gl.UNSIGNED_BYTE,
                       new Uint8Array(placeholder_color));
-        // Asynchronously load an image
+
+        // Asynchronously load the image while preserving global unpack state.
         this.image = new Image();
         this.image.addEventListener('load', (event) => {
-            console.debug("Texture loaded.");
-            // Now that the image has loaded, copy it to the texture.
-            gl.bindTexture(gl.TEXTURE_2D, this.texture);
             const previous_flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+            const previous_premultiply = gl.getParameter(
+                gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
+            const previous_color_space = gl.getParameter(
+                gl.UNPACK_COLORSPACE_CONVERSION_WEBGL);
+
+            gl.bindTexture(gl.TEXTURE_2D, this.texture);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip_y);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA,
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            if(role == TEXTURE_ROLE.DATA)
+            {
+                gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,
+                               gl.NONE);
+            }
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA,
                           gl.UNSIGNED_BYTE, event.target);
+
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, previous_flip);
-            // Use mipmaps only after all levels can be generated from the
-            // loaded image. Until then, the linear-filtered placeholder works.
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
-                             gl.LINEAR_MIPMAP_LINEAR);
-            gl.generateMipmap(gl.TEXTURE_2D);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
+                           previous_premultiply);
+            gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,
+                           previous_color_space);
+
+            if(role == TEXTURE_ROLE.COLOR)
+            {
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+                                 gl.LINEAR_MIPMAP_LINEAR);
+                gl.generateMipmap(gl.TEXTURE_2D);
+            }
+
+            this.width = event.target.naturalWidth;
+            this.height = event.target.naturalHeight;
+            console.debug(`Texture loaded: ${url}`);
+            for(const listener of this.load_listeners)
+            {
+                listener(this);
+            }
+        });
+        this.image.addEventListener('error', () => {
+            console.error(`Failed to load texture: ${url}`);
         });
         this.image.src = url;
-        this.gl = gl;
+    }
+
+    /** Run a callback after this texture has loaded. */
+    onLoad(listener)
+    {
+        this.load_listeners.push(listener);
+        if(this.width > 0 && this.height > 0)
+        {
+            listener(this);
+        }
     }
 
     /** Bind this texture to a sampler for drawing. */
@@ -230,14 +313,63 @@ class Texture
         this.gl.activeTexture(this.gl.TEXTURE0 + unit);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
         const uniform_ref = this.gl.getUniformLocation(program, uniform_name);
+        if(uniform_ref == null)
+        {
+            throw(new Error(`Texture uniform not found: ${uniform_name}`));
+        }
         this.gl.uniform1i(uniform_ref, unit);
+    }
+}
+
+class CardMaterial
+{
+    /** Create the artwork and packed foil control for a card. */
+    constructor(gl, artwork_url, foil_kind, foil_control_url)
+    {
+        this.artwork = new Texture(gl, artwork_url, {flip_y: true});
+        this.foil_control = new Texture(gl, foil_control_url, {
+            flip_y: true,
+            role: TEXTURE_ROLE.DATA,
+        });
+        this.foil_kind = parseFoilKind(foil_kind);
+        this.gl = gl;
+
+        this.artwork.onLoad(() => this.checkDimensions());
+        this.foil_control.onLoad(() => this.checkDimensions());
+    }
+
+    /** Bind all card material state before drawing. */
+    use(program)
+    {
+        this.artwork.use(program, "u_texture", 0);
+        this.foil_control.use(program, "u_foil_control", 1);
+        const kind_ref = this.gl.getUniformLocation(program, "u_foil_kind");
+        if(kind_ref == null)
+        {
+            throw(new Error("Foil-kind uniform not found: u_foil_kind"));
+        }
+        this.gl.uniform1i(kind_ref, this.foil_kind);
+    }
+
+    /** Warn when artwork and foil fields do not share a pixel grid. */
+    checkDimensions()
+    {
+        if(this.artwork.width == 0 || this.foil_control.width == 0)
+        {
+            return;
+        }
+        if(this.artwork.width != this.foil_control.width ||
+           this.artwork.height != this.foil_control.height)
+        {
+            console.warn("Artwork and foil control dimensions differ.");
+        }
     }
 }
 
 class Model
 {
     /** Create a textured model from position and texture coordinates. */
-    constructor(gl, program, vertices_coords, texture_coords)
+    constructor(gl, program, vertices_coords, texture_coords, material)
     {
         this.vertex_array = new VertexArray(gl);
         this.vertex_array.addAttribute(program, "a_position",
@@ -246,14 +378,8 @@ class Model
                                        new Float32Array(texture_coords),
                                        {component_count: 2});
         this.vertex_count = vertices_coords.length / 3;
-        this.textures = [];
+        this.material = material;
         this.gl = gl;
-    }
-
-    /** Add a texture to this model. */
-    addTexture(url, options = {})
-    {
-        this.textures.push(new Texture(this.gl, url, options));
     }
 }
 

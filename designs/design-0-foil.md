@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Implemented.
 
 This document specifies the physical model, artist-facing data format,
 WebGL 2 implementation, and validation plan for two holographic foil
@@ -226,21 +226,18 @@ wave would produce idealized sharp orders. Real materials have finite coherent
 regions, manufacturing variation, roughness, and non-point illumination. The
 orders therefore have nonzero angular width.
 
-The directional shader approximates each order with a two-dimensional
-Gaussian:
+The directional shader uses a Gaussian envelope across the grating axis:
 
 $$
-D(\lambda) =
-\exp\left[
-    -\frac{(u-u_\lambda)^2}{2\sigma_u^2}
-    -\frac{v^2}{2\sigma_v^2}
-\right].
+G(v)=\exp\left(-\frac{v^2}{2\sigma_v^2}\right).
 $$
 
-Here $u_\lambda$ is the wavelength-dependent lobe center. The authored reveal
-width controls $\sigma_u$ and, through an internal scale factor, $\sigma_v$.
-This Gaussian is a practical real-time approximation of local angular
-selectivity, not a claim that all physical foil lobes are exactly Gaussian.
+The authored reveal width controls the soft boundary around the finite visible
+wavelength interval along $u$. The renderer uses a broader internal constant
+for $\sigma_v$. Keeping the widths separate preserves wavelength separation
+without restricting the response to an impractically small solid angle. The
+Gaussian is a practical real-time approximation of local angular selectivity,
+not a claim that all physical foil lobes are exactly Gaussian.
 
 ### Interpreting the reveal field
 
@@ -271,38 +268,36 @@ causes the active contour to sweep through the card. A radial red gradient
 produces a circular contour; a diamond distance field produces a diamond
 contour.
 
-Both $+1$ and $-1$ orders must be evaluated:
+Both $+1$ and $-1$ orders are represented by using $|u|$. Inverting the
+grating relation gives the wavelength visible at the current angle:
 
 $$
-D_{\pm}(\lambda) = D(u-u_\lambda,v) + D(u+u_\lambda,v).
+\lambda(u)=\lambda_0\frac{|u|}{u_0}.
 $$
 
-Including both orders makes $\theta$ and $\theta+\pi$ equivalent, as required
+Using the magnitude makes $\theta$ and $\theta+\pi$ equivalent, as required
 for an unoriented physical grating axis.
 
 ### RGB spectral approximation
 
-The initial shader evaluates the directional response at three representative
-wavelengths:
+The directional shader maps the continuous wavelength interval from 400 to
+700 nm to RGB using Alan Zucconi's branchless six-lobe approximation:
+[Improving the Rainbow, Part 2](https://www.alanzucconi.com/2017/07/15/improving-the-rainbow-2/).
+It fits two clipped parabolic lobes to each output channel and avoids the
+visibly separated red, green, and blue bands produced by sampling only three
+representative wavelengths.
+
+Let $Z_6(\lambda)$ denote the Zucconi6 result and let $E(u)$ be the smooth
+finite-spectrum envelope. The diffraction color is
 
 $$
-\lambda_R=610\,\mathrm{nm},\qquad
-\lambda_G=550\,\mathrm{nm},\qquad
-\lambda_B=460\,\mathrm{nm}.
+\mathbf{c}_{\mathrm{diff}}=
+E(u)G(v)\left[Z_6\!\left(\lambda(u)\right)\right]^{2.2}.
 $$
 
-The resulting samples form the linear RGB diffraction color:
-
-$$
-\mathbf{c}_{\mathrm{diff}} =
-\left(D_{\pm}(\lambda_R),
-      D_{\pm}(\lambda_G),
-      D_{\pm}(\lambda_B)\right).
-$$
-
-This approximation produces wavelength separation without the cost of a full
-spectral integral. It is not colorimetric. A later implementation may sample
-more wavelengths and integrate against standard color-matching functions.
+The exponent converts the display-space fit to the approximately linear space
+used for lighting. This is still an empirical RGB fit rather than a
+colorimetric spectral integral.
 
 ### Wide-angle approximation
 
@@ -435,7 +430,7 @@ $$
 The initial internal constants are
 
 $$
-U_{\min}=0.04, \qquad U_{\max}=0.72.
+U_{\min}=0.18, \qquad U_{\max}=0.95.
 $$
 
 These values are dimensionless projected-half-vector coordinates. They may be
@@ -475,14 +470,14 @@ $$
 \sigma_{\min}=0.015, \qquad \sigma_{\max}=0.18.
 $$
 
-The perpendicular width is
+The perpendicular width is an internal renderer constant:
 
 $$
-\sigma_v=K_v\sigma_u,
+\sigma_v=0.20.
 $$
 
-with initial internal constant $K_v=1.5$. A nonzero minimum avoids unstable,
-sub-pixel angular impulses.
+It is intentionally broader than a typical $\sigma_u$. A nonzero minimum for
+$\sigma_u$ avoids unstable, sub-pixel angular impulses.
 
 ### PNG and image-processing requirements
 
@@ -652,27 +647,29 @@ It performs these steps:
    ```
 
 3. Decode the green-reference center and local widths.
-4. Scale that center by each representative wavelength.
-5. Evaluate positive and negative first-order Gaussian lobes.
-6. Store the red-, green-, and blue-wavelength responses in linear RGB.
-7. Apply internal Fresnel, neutral highlight, and micro-glint terms.
+4. Use $|u|$ to combine the positive and negative first orders.
+5. Invert the grating relation to obtain a wavelength from 400 to 700 nm.
+6. Evaluate Zucconi6 and convert its result to linear RGB.
+7. Apply the internal Fresnel term. Do not add a neutral specular or
+   micro-glint term: either would wash the narrow diffraction band toward
+   white and make it resemble ordinary Phong lighting.
 8. Combine the internal reflection terms with retained base artwork.
 9. Return the uncomposited foil-surface color. Coverage is applied later.
 
-The Gaussian helper should be explicit:
+The spectral conversion should be branchless. Its helper evaluates clipped
+parabolic lobes:
 
 ```glsl
-float diffractionLobe(float u, float v, float center,
-                       float width_u, float width_v)
+vec3 spectralBump(vec3 position, vec3 offset)
 {
-    float local_u = (u - center) / width_u;
-    float local_v = v / width_v;
-    return exp(-0.5 * (local_u * local_u + local_v * local_v));
+    vec3 value = vec3(1.0) - position * position;
+    return clamp(value - offset, 0.0, 1.0);
 }
 ```
 
-The implementation must clamp widths to their internal minimum before
-division, even though valid packed values already decode to nonzero widths.
+The implementation must clamp the reveal width and reveal coordinate to their
+internal minima before using them in a denominator, even though valid packed
+values already decode to nonzero values.
 
 ### Wide-angle evaluation
 
@@ -867,7 +864,8 @@ filtering predictable.
 7. Refactor the current effect into `evaluateWideAngleFoil()` without changing
    its artist-facing behavior.
 8. Implement tangent-space half-vector calculation.
-9. Implement directional RGB diffraction lobes using the packed fields.
+9. Implement continuous directional wavelength reconstruction and Zucconi6
+   color conversion using the packed fields.
 10. Composite both kinds using unmodified alpha coverage.
 11. Add strict error reporting and dimension validation.
 12. Validate shaders, JavaScript, packed channels, and interactive behavior.
@@ -945,13 +943,11 @@ Measure frame time at the canvas's largest expected display size. Compare:
 
 - the existing wide-angle shader;
 - the refactored wide-angle path with manual control sampling; and
-- the directional path with six Gaussian evaluations.
+- the directional path with the branchless Zucconi6 evaluation.
 
-The directional path evaluates two orders for three wavelengths, hence six
-lobes per fragment. If performance is inadequate, first replace the two
-explicit order evaluations with symmetry-aware algebra or reduce control-map
-sampling cost. Do not remove correct orientation interpolation without a
-replacement.
+The directional path evaluates six clipped parabolic components without
+branches. If performance is inadequate, first reduce control-map sampling
+cost. Do not remove correct orientation interpolation without a replacement.
 
 ## Edge cases and limitations
 
@@ -1045,8 +1041,8 @@ wavelength separation, and a physical relationship to local grating spacing.
 
 A height-field Fourier model can reproduce much richer microstructure, but it
 is expensive, difficult to author, and unnecessary for the current demo. The
-Gaussian-order model preserves the most important directional and spectral
-behavior in a compact shader.
+continuous wavelength model with an angular envelope preserves the most
+important directional and spectral behavior in a compact shader.
 
 ## Future extensions
 
