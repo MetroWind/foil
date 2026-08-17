@@ -31,6 +31,21 @@ function linearToSrgb(value)
     return 1.055 * Math.pow(value, 1.0 / 2.4) - 0.055;
 }
 
+/** Apply display-referred input Levels to one encoded component. */
+function applyLevels(value, black_point, white_point, midtone)
+{
+    if(!Number.isFinite(black_point) || !Number.isFinite(white_point)
+       || !Number.isFinite(midtone) || black_point < 0.0
+       || white_point > 1.0 || black_point >= white_point
+       || midtone <= 0.0)
+    {
+        throw(new Error("Invalid output Levels calibration."));
+    }
+    const normalized = Math.min(Math.max(
+        (value - black_point) / (white_point - black_point), 0.0), 1.0);
+    return Math.pow(normalized, 1.0 / midtone);
+}
+
 /** Convert D65 CIE XYZ values to linear sRGB. */
 function xyzToLinearSrgb(xyz)
 {
@@ -398,6 +413,7 @@ if(typeof module != "undefined")
         VISIBLE_WAVELENGTH_MAX_UM,
         VISIBLE_WAVELENGTH_MIN_UM,
         ZERO_ORDER_ENERGY,
+        applyLevels,
         crossGrooveGaussian,
         decodeCrossGrooveWidth,
         decodeGratingAxis,

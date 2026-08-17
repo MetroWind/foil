@@ -17,6 +17,15 @@ precision highp float;
 #ifndef FOIL_INTENSITY
 #define FOIL_INTENSITY 1.0
 #endif
+#ifndef LEVELS_BLACK_POINT
+#define LEVELS_BLACK_POINT 0.0
+#endif
+#ifndef LEVELS_WHITE_POINT
+#define LEVELS_WHITE_POINT 1.0
+#endif
+#ifndef LEVELS_MIDTONE
+#define LEVELS_MIDTONE 1.0
+#endif
 
 const float PI = 3.14159265359;
 const float BRDF_EPSILON = 0.00001;
@@ -43,6 +52,9 @@ const float AMBIENT_PRINT_IRRADIANCE = 0.08;
 const float EXPOSURE = 1.0;
 const float GAMUT_KNEE_FRACTION = 0.55;
 const float GAMUT_TARGET_FRACTION = 0.85;
+const float LEVELS_BLACK_POINT_VALUE = float(LEVELS_BLACK_POINT);
+const float LEVELS_WHITE_POINT_VALUE = float(LEVELS_WHITE_POINT);
+const float LEVELS_MIDTONE_VALUE = float(LEVELS_MIDTONE);
 #if LIGHT_SAMPLE_COUNT == 2
 const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
     vec2(-0.5, -0.5),
@@ -132,6 +144,19 @@ vec3 linearToSrgb(vec3 linear_color)
     vec3 upper = 1.055 * pow(linear_color, vec3(1.0 / 2.4)) - 0.055;
     return mix(upper, lower,
                lessThanEqual(linear_color, vec3(0.0031308)));
+}
+
+// Apply display-referred input Levels after the physical color pipeline.
+// Midtone follows image-editor convention: values above one brighten.
+vec3 applyLevels(vec3 encoded_color)
+{
+    float level_range = max(
+        LEVELS_WHITE_POINT_VALUE - LEVELS_BLACK_POINT_VALUE,
+        BRDF_EPSILON);
+    vec3 normalized = clamp(
+        (encoded_color - LEVELS_BLACK_POINT_VALUE) / level_range,
+        0.0, 1.0);
+    return pow(normalized, vec3(1.0 / LEVELS_MIDTONE_VALUE));
 }
 
 // Compress HDR luminance while preserving chromaticity for gamut mapping.
@@ -655,6 +680,7 @@ void main()
     vec3 display_linear = control.coverage > 0.0
                         ? perceptualGamutMap(tone_mapped)
                         : clamp(tone_mapped, 0.0, 1.0);
-    out_color = vec4(linearToSrgb(display_linear),
+    vec3 encoded_color = linearToSrgb(display_linear);
+    out_color = vec4(applyLevels(encoded_color),
                      artwork_sample.a);
 }

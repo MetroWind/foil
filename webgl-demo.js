@@ -95,7 +95,16 @@ const RENDER_QUALITY = Object.freeze({
 // A value of 1.0 uses the baseline energy budget; the supported range is
 // 0.0 through 6.0. Increasing it moves energy from print into diffraction.
 const FOIL_CALIBRATION = Object.freeze({
-    FOIL_INTENSITY: 1.0,
+    FOIL_INTENSITY: 0.5,
+});
+
+// Display-referred post-processing, separate from physical light/material
+// calibration. Lowering the white point makes dull whites reach display white;
+// midtone values above one brighten midtones without moving the endpoints.
+const OUTPUT_CALIBRATION = Object.freeze({
+    LEVELS_BLACK_POINT: 0.0,
+    LEVELS_WHITE_POINT: 0.88,
+    LEVELS_MIDTONE: 1.0,
 });
 
 /** Initialize and run the physical foil demo. */
@@ -120,11 +129,22 @@ function main()
         {
             throw(new Error("FOIL_INTENSITY must be between 0.0 and 6.0."));
         }
+        if(!Number.isFinite(OUTPUT_CALIBRATION.LEVELS_BLACK_POINT)
+           || !Number.isFinite(OUTPUT_CALIBRATION.LEVELS_WHITE_POINT)
+           || !Number.isFinite(OUTPUT_CALIBRATION.LEVELS_MIDTONE)
+           || OUTPUT_CALIBRATION.LEVELS_BLACK_POINT < 0.0
+           || OUTPUT_CALIBRATION.LEVELS_WHITE_POINT > 1.0
+           || OUTPUT_CALIBRATION.LEVELS_BLACK_POINT
+              >= OUTPUT_CALIBRATION.LEVELS_WHITE_POINT
+           || OUTPUT_CALIBRATION.LEVELS_MIDTONE <= 0.0)
+        {
+            throw(new Error("Invalid output Levels calibration."));
+        }
         const shader_definitions = Object.assign(
-            {}, quality, FOIL_CALIBRATION);
+            {}, quality, FOIL_CALIBRATION, OUTPUT_CALIBRATION);
         const program = new ShaderProgram(
-            gl, "vert-shader.glsl?version=physical-brdf-6",
-            "frag-shader.glsl?version=physical-brdf-6",
+            gl, "vert-shader.glsl?version=physical-brdf-7",
+            "frag-shader.glsl?version=physical-brdf-7",
             shader_definitions);
         const renderer = new Renderer(gl, program);
         const scene = initScene(gl, program, loadModel("model/card.obj"));

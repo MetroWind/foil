@@ -31,6 +31,20 @@ function testSrgb()
     }
 }
 
+/** Validate display-referred black, white, and midtone Levels controls. */
+function testLevels()
+{
+    assertNear(foil_math.applyLevels(0.0, 0.0, 0.88, 1.0), 0.0);
+    assertNear(foil_math.applyLevels(0.44, 0.0, 0.88, 1.0), 0.5);
+    assertNear(foil_math.applyLevels(0.88, 0.0, 0.88, 1.0), 1.0);
+    assertNear(foil_math.applyLevels(0.44, 0.0, 0.88, 2.0),
+               Math.sqrt(0.5));
+    assert.throws(function rejectReversedLevels()
+    {
+        foil_math.applyLevels(0.5, 0.8, 0.2, 1.0);
+    });
+}
+
 /** Validate OKLab round trips and perceptual out-of-gamut compression. */
 function testGamutMapping()
 {
@@ -240,6 +254,7 @@ function testFiniteSweep()
 }
 
 testSrgb();
+testLevels();
 testGamutMapping();
 testControls();
 testOrders();

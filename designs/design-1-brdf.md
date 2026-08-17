@@ -595,7 +595,21 @@ c_s=
 \end{cases}
 $$
 
-Alpha remains the artwork alpha. Tone mapping must not alter alpha.
+Finally, display-referred input Levels establish an artistic presentation
+white point without changing light or material energy. For black point $b$,
+white point $w$, and midtone $g$,
+
+$$
+x=\operatorname{clamp}\left(\frac{c_s-b}{w-b},0,1\right),
+\qquad
+c_{out}=x^{1/g}.
+$$
+
+The baseline uses $b=0$, $w=0.88$, and $g=1$. Lowering the white point makes
+dull whites reach display white; increasing the midtone value brightens
+midtones while preserving both endpoints. These are post-process controls,
+not BRDF parameters. Alpha remains the artwork alpha and is not altered by
+tone mapping or Levels.
 
 ## Approximate environment fill
 
@@ -957,6 +971,12 @@ const card_description = {
         control: "foil_control_v2.png?version=constant-spacing-1",
     },
 };
+
+const OUTPUT_CALIBRATION = Object.freeze({
+    LEVELS_BLACK_POINT: 0.0,
+    LEVELS_WHITE_POINT: 0.88,
+    LEVELS_MIDTONE: 1.0,
+});
 ```
 
 No artist-facing foil intensity, order count, F0, exposure, groove-depth, or
@@ -973,7 +993,9 @@ The fragment shader is divided into small functions with explicit domains:
 ```glsl
 vec3 srgbToLinear(vec3 encoded);
 vec3 linearToSrgb(vec3 linear_color);
+vec3 applyLevels(vec3 encoded_color);
 vec3 toneMap(vec3 hdr_color);
+vec3 perceptualGamutMap(vec3 linear_rgb);
 vec3 xyzToLinearSrgb(vec3 xyz);
 FoilControl sampleFoilControl(vec2 uv);
 vec3 sampleSpectralXyz(float wavelength_um);
@@ -1345,7 +1367,8 @@ The design is implemented when all of the following are true:
 6. A finite disk light visibly broadens the angular response.
 7. Wavelengths are converted through the committed CIE/D65 lookup.
 8. Light and material layers accumulate in linear HDR values.
-9. Output uses tone mapping and exact sRGB encoding.
+9. Output uses tone mapping, perceptual gamut mapping, exact sRGB encoding,
+   and display-referred Levels.
 10. The packed version-2 texture has documented physical semantics.
 11. CPU tests cover equations, energy partitions, color conversion, and edge
     cases.
