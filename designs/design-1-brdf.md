@@ -2,41 +2,26 @@
 
 ## Status
 
-Implemented on 2026-08-17. Visual acceptance and browser/GPU performance
-validation remain pending.
+Implemented and accepted as the renderer baseline on 2026-08-17.
 
-This document specifies the next foil renderer. It replaces the current
-artistically tuned directional effect with a physically based, rasterized
-bidirectional reflectance model. It does not require ray tracing. It evaluates
-direct illumination from a finite area light in a WebGL 2 fragment shader.
+This document specifies the foil renderer baseline: a physically based,
+rasterized bidirectional reflectance model. It does not require ray tracing.
+It evaluates direct illumination from a finite area light in a WebGL 2
+fragment shader.
 
 The word "physical" in this document means that directions, wavelengths,
 light transport, order weights, and color-space conversions have explicit
 physical meanings. It does not mean that the renderer solves Maxwell's
 equations for the microscopic foil structure at runtime.
 
-## Relationship to the previous design
+## Baseline scope
 
-[`design-0-foil.md`](design-0-foil.md) defines the packed control texture,
-the `CardMaterial` abstraction, and two qualitative foil appearances. This
-design retains the useful resource and material abstractions but supersedes
-the following parts of that document:
-
-- the red channel is interpreted as physical groove frequency rather than an
-  artistic reveal coordinate;
-- the blue channel describes microstructure disorder rather than only the
-  width of a hand-tuned angular envelope;
-- the directional shader becomes a multi-order diffraction BRDF;
-- the arbitrary wide-angle spectrum, Phong highlight, and sparkle terms are
-  not part of the physical path;
-- wavelength conversion uses CIE color-matching data rather than Zucconi6;
-- the renderer integrates a disk light instead of evaluating one ideal
-  directional ray; and
-- output uses explicit exposure, tone mapping, and the sRGB transfer function.
-
-The existing `wide_angle` path remains available as a legacy comparison until
-the physical linear-grating path passes visual and numerical validation. A
-physical distribution of many grating orientations is a later extension.
+The baseline has one foil kind, `physical_linear`. Its packed fields describe
+physical groove spacing, microstructure disorder, grating orientation, and
+coverage. Wavelength conversion uses CIE color-matching data, illumination
+comes from a finite disk, and output uses explicit exposure, perceptual gamut
+mapping, and the exact sRGB transfer function. A physical distribution of many
+grating orientations remains a later extension.
 
 ## Goals
 
@@ -705,28 +690,12 @@ Do not apply `smoothstep()` to coverage. Filtering already produces fractional
 area coverage at boundaries. Artists continue to tune apparent foil amount by
 painting alpha rather than by receiving a separate intensity control.
 
-### Migration of the current demo texture
+### Demo control asset
 
-The old red field encodes an artistic reveal coordinate, not a physical groove
-period. An initial attempted migration mapped it to spacing using the previous
-relation
-
-$$
-d=\frac{0.550}{u_0}\;\mu\mathrm m
-$$
-
-and then inverted the new logarithmic encoding. Visual testing rejected that
-migration: the reveal ramp became a spatial groove-frequency ramp and painted
-repeated rainbows directly across every covered region.
-
-The demo asset therefore uses a constant $d=1.10\,\mu\mathrm m$, encoded as
-red byte 155. Green, blue, and alpha are copied without semantic changes. A
-future artist-authored spacing field may vary red where the intended physical
-film genuinely changes groove frequency, but an artistic reveal field must
-not be repurposed as one.
-
-The converted file should be named `foil_control_v2.png`. A versioned filename
-is preferable to a query string because the pixel contract has changed.
+The baseline demo asset is `foil_control_v2.png`. It uses a constant
+$d=1.10\,\mu\mathrm m$, encoded as red byte 155, with authored orientation,
+disorder, and coverage fields. A future artist-authored spacing field may vary
+red where the intended physical film genuinely changes groove frequency.
 
 ## Tangent frame
 
@@ -995,14 +964,7 @@ light-width parameter is introduced. Renderer quality and calibration
 constants remain internal. The only artist-authored strength control is
 coverage alpha.
 
-Allowed foil kinds during migration are:
-
-- `physical_linear`: the new implementation;
-- `wide_angle`: the existing legacy comparison; and
-- `directional_legacy`: the current Zucconi6 path, temporarily renamed.
-
-After the physical path is accepted, `directional_legacy` and its shader code
-are removed rather than maintained indefinitely.
+`physical_linear` is the only supported foil kind. Unknown values are errors.
 
 ## GLSL organization
 
@@ -1239,7 +1201,7 @@ Each stage must compile and keep a usable demo.
 8. Add GGX zeroth-order reflection with no diffraction.
 9. Convert the packed control map to version 2 physical semantics.
 10. Implement one ideal first diffraction order and compare it to CPU math.
-11. Add CIE XYZ lookup and remove Zucconi6 from the physical path.
+11. Add CIE XYZ lookup for wavelength conversion.
 12. Add normalized multi-order efficiencies.
 13. Add the cross-groove lobe and spectral period-disorder convolution.
 14. Add coverage-layer composition and energy accounting.
@@ -1247,7 +1209,6 @@ Each stage must compile and keep a usable demo.
 16. Add quality variants and measure performance.
 17. Run numerical, visual, and cache-reload tests.
 18. Make `physical_linear` the demo default.
-19. Remove `directional_legacy` only after explicit visual acceptance.
 
 The physical path should not be built by incrementally adding more terms to
 `evaluateDirectionalFoil()`. Its BRDF and light integration boundaries are
@@ -1347,10 +1308,9 @@ f_{\mathrm{wide}}=
 \int p(\theta,d)f_{\mathrm{linear}}(\theta,d)\,d\theta\,dd.
 $$
 
-Runtime quadrature over several orientations would replace the current
-procedural rainbow. This is deferred until the single-orientation reference is
-correct, because otherwise distribution width can conceal errors in the base
-BRDF.
+Runtime quadrature over several orientations would extend the current
+single-orientation BRDF. This is deferred because distribution width can
+conceal errors in the base BRDF.
 
 ### Environment lighting
 
@@ -1389,8 +1349,7 @@ The design is implemented when all of the following are true:
 10. The packed version-2 texture has documented physical semantics.
 11. CPU tests cover equations, energy partitions, color conversion, and edge
     cases.
-12. Both shaders compile with `glslangValidator`.
+12. The vertex and fragment shaders compile with `glslangValidator`.
 13. No WebGL texture-binding or mipmap warnings occur.
 14. The default quality level remains interactive.
-15. Legacy directional code is retained or removed according to explicit
-    visual acceptance, not silently mixed into the physical path.
+15. No retired qualitative foil path is mixed into the physical renderer.
