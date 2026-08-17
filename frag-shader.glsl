@@ -2,94 +2,294 @@
 // -*- mode: c; -*-
 precision highp float;
 
-const int FOIL_KIND_WIDE_ANGLE = 0;
-const int FOIL_KIND_DIRECTIONAL = 1;
+#ifndef LIGHT_SAMPLE_COUNT
+#define LIGHT_SAMPLE_COUNT 4
+#endif
+#ifndef ORDER_COUNT
+#define ORDER_COUNT 4
+#endif
+#ifndef SPECTRAL_TAP_COUNT
+#define SPECTRAL_TAP_COUNT 9
+#endif
+#ifndef DIFFRACTION_ORDER
+#define DIFFRACTION_ORDER 0
+#endif
+#ifndef FOIL_INTENSITY
+#define FOIL_INTENSITY 1.0
+#endif
+
 const float PI = 3.14159265359;
-const float TAU = 2.0 * PI;
-const float REVEAL_MIN = 0.18;
-const float REVEAL_MAX = 0.95;
-const float WIDTH_MIN = 0.015;
-const float WIDTH_MAX = 0.18;
-const float PERPENDICULAR_WIDTH = 0.20;
-const float VISIBLE_WAVELENGTH_MIN = 400.0;
-const float VISIBLE_WAVELENGTH_MAX = 700.0;
-const float REFERENCE_WAVELENGTH = 550.0;
+const float BRDF_EPSILON = 0.00001;
+const float GROOVE_SPACING_MIN_UM = 0.55;
+const float GROOVE_SPACING_MAX_UM = 3.20;
+const float VISIBLE_WAVELENGTH_MIN_UM = 0.380;
+const float VISIBLE_WAVELENGTH_MAX_UM = 0.780;
+const float SPECTRAL_JACOBIAN_SCALE = 1000.0;
+const float FOIL_GGX_ROUGHNESS = 0.16;
+const vec3 FOIL_F_0 = vec3(0.82);
+const float ZERO_ORDER_ENERGY = 0.20;
+const float BASE_TOTAL_DIFFRACTION_ENERGY = 0.12;
+const float BASE_TRANSMITTED_PRINT_ENERGY = 0.60;
+const float FOIL_INTENSITY_VALUE = float(FOIL_INTENSITY);
+const float TOTAL_DIFFRACTION_ENERGY =
+    BASE_TOTAL_DIFFRACTION_ENERGY * FOIL_INTENSITY_VALUE;
+const float SIGNED_DIFFRACTION_ENERGY =
+    0.5 * TOTAL_DIFFRACTION_ENERGY;
+const float TRANSMITTED_PRINT_ENERGY =
+    BASE_TRANSMITTED_PRINT_ENERGY
+    - BASE_TOTAL_DIFFRACTION_ENERGY * (FOIL_INTENSITY_VALUE - 1.0);
+const float ORDER_DECAY = 3.00;
+const float AMBIENT_PRINT_IRRADIANCE = 0.08;
+const float EXPOSURE = 1.0;
+const float GAMUT_KNEE_FRACTION = 0.55;
+const float GAMUT_TARGET_FRACTION = 0.85;
+#if LIGHT_SAMPLE_COUNT == 2
+const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
+    vec2(-0.5, -0.5),
+    vec2(0.5, 0.5)
+);
+#elif LIGHT_SAMPLE_COUNT == 4
+const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
+    vec2(-0.5, -0.5),
+    vec2(0.5, -0.5),
+    vec2(-0.5, 0.5),
+    vec2(0.5, 0.5)
+);
+#elif LIGHT_SAMPLE_COUNT == 8
+const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
+    vec2(0.5, 0.0),
+    vec2(0.0, 0.5),
+    vec2(-0.5, 0.0),
+    vec2(0.0, -0.5),
+    vec2(0.612372436, 0.612372436),
+    vec2(-0.612372436, 0.612372436),
+    vec2(-0.612372436, -0.612372436),
+    vec2(0.612372436, -0.612372436)
+);
+#elif LIGHT_SAMPLE_COUNT == 16
+// Two staggered rings have zero centroid and mean squared radius 1/2,
+// matching the first two radial moments of a uniform unit disk.
+const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
+    vec2(0.500000000, 0.000000000),
+    vec2(0.353553391, 0.353553391),
+    vec2(0.000000000, 0.500000000),
+    vec2(-0.353553391, 0.353553391),
+    vec2(-0.500000000, 0.000000000),
+    vec2(-0.353553391, -0.353553391),
+    vec2(0.000000000, -0.500000000),
+    vec2(0.353553391, -0.353553391),
+    vec2(0.800103145, 0.331413574),
+    vec2(0.331413574, 0.800103145),
+    vec2(-0.331413574, 0.800103145),
+    vec2(-0.800103145, 0.331413574),
+    vec2(-0.800103145, -0.331413574),
+    vec2(-0.331413574, -0.800103145),
+    vec2(0.331413574, -0.800103145),
+    vec2(0.800103145, -0.331413574)
+);
+#else
+#error Unsupported LIGHT_SAMPLE_COUNT
+#endif
 
 in vec2 v_texcoord;
-in vec3 v_model_position;
 in vec3 v_view_position;
+in vec3 v_view_normal;
+in vec3 v_view_tangent;
+in vec3 v_view_bitangent;
 
-uniform mat4 u_view;
-uniform sampler2D u_texture;
+uniform sampler2D u_artwork;
 uniform sampler2D u_foil_control;
-uniform int u_foil_kind;
+uniform sampler2D u_spectral_xyz;
+uniform vec3 u_light_position;
+uniform vec3 u_light_normal;
+uniform vec3 u_light_axis_x;
+uniform vec3 u_light_axis_y;
+uniform float u_light_radius;
+uniform float u_light_radiance;
 
 out vec4 out_color;
 
 struct FoilControl
 {
-    float reveal;
+    float groove_spacing_um;
     vec2 grating_axis;
-    float reveal_width;
+    float disorder;
     float coverage;
 };
 
-// Return stable pseudo-random noise for stationary foil microstructure.
-float hash21(vec2 value)
+// Decode display-referred artwork into the linear-light working space.
+vec3 srgbToLinear(vec3 encoded)
 {
-    vec3 fraction = fract(vec3(value.xyx) * 0.1031);
-    fraction += dot(fraction, fraction.yzx + 33.33);
-    return fract((fraction.x + fraction.y) * fraction.z);
+    vec3 lower = encoded / 12.92;
+    vec3 upper = pow((encoded + 0.055) / 1.055, vec3(2.4));
+    return mix(upper, lower, lessThanEqual(encoded, vec3(0.04045)));
 }
 
-// Approximate a repeating visible spectrum with one lobe per RGB channel.
-vec3 spectrum(float position)
+// Encode a tone-mapped linear-light value for the default sRGB framebuffer.
+vec3 linearToSrgb(vec3 linear_color)
 {
-    const vec3 CENTERS = vec3(0.02, 0.36, 0.67);
-    const vec3 WIDTHS = vec3(0.18, 0.15, 0.16);
-    vec3 distance = abs(fract(position) - CENTERS);
-    distance = min(distance, 1.0 - distance);
-    return exp(-0.5 * distance * distance / (WIDTHS * WIDTHS));
+    vec3 lower = 12.92 * linear_color;
+    vec3 upper = 1.055 * pow(linear_color, vec3(1.0 / 2.4)) - 0.055;
+    return mix(upper, lower,
+               lessThanEqual(linear_color, vec3(0.0031308)));
 }
 
-// Return three clipped parabolic lobes used by Zucconi's spectral fit.
-vec3 spectralBump(vec3 position, vec3 offset)
+// Compress HDR luminance while preserving chromaticity for gamut mapping.
+vec3 toneMap(vec3 hdr_color)
 {
-    vec3 value = vec3(1.0) - position * position;
-    return clamp(value - offset, 0.0, 1.0);
+    float luminance = dot(hdr_color, vec3(0.2126, 0.7152, 0.0722));
+    if(luminance <= 0.0)
+    {
+        return vec3(0.0);
+    }
+    float mapped_luminance = 1.0 - exp(-EXPOSURE * luminance);
+    return hdr_color * mapped_luminance / luminance;
 }
 
-// Approximate the display-space color of a wavelength from 400 to 700 nm.
-// This is Alan Zucconi's six-lobe, branchless visible-spectrum fit:
-// https://www.alanzucconi.com/2017/07/15/improving-the-rainbow-2/
-vec3 spectralZucconi6(float wavelength)
+// Convert D65 CIE XYZ tristimulus values into linear sRGB.
+vec3 xyzToLinearSrgb(vec3 xyz)
 {
-    float position = clamp(
-        (wavelength - VISIBLE_WAVELENGTH_MIN)
-        / (VISIBLE_WAVELENGTH_MAX - VISIBLE_WAVELENGTH_MIN),
-        0.0, 1.0);
-    const vec3 C_1 = vec3(3.54585104, 2.93225262, 2.41593945);
-    const vec3 X_1 = vec3(0.69549072, 0.49228336, 0.27699880);
-    const vec3 Y_1 = vec3(0.02312639, 0.15225084, 0.52607955);
-    const vec3 C_2 = vec3(3.90307140, 3.21182957, 3.96587128);
-    const vec3 X_2 = vec3(0.11748627, 0.86755042, 0.66077860);
-    const vec3 Y_2 = vec3(0.84897130, 0.88445281, 0.73949448);
-
-    return spectralBump(C_1 * (position - X_1), Y_1)
-         + spectralBump(C_2 * (position - X_2), Y_2);
+    const mat3 XYZ_TO_SRGB = mat3(
+         3.24096994, -0.96924364,  0.05563008,
+        -1.53738318,  1.87596750, -0.20397696,
+        -0.49861076,  0.04155506,  1.05697151
+    );
+    return XYZ_TO_SRGB * xyz;
 }
 
-// Lighting is evaluated in approximately linear color space.
-vec3 linearColor(vec3 color)
+// Cube root with defined behavior for out-of-gamut negative LMS values.
+float signedCubeRoot(float value)
 {
-    return pow(max(color, vec3(0.0)), vec3(2.2));
+    return sign(value) * pow(abs(value), 1.0 / 3.0);
 }
 
-vec3 displayColor(vec3 color)
+// Convert linear sRGB to the perceptually uniform OKLab space.
+vec3 linearSrgbToOklab(vec3 linear_rgb)
 {
-    return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
+    vec3 lms = vec3(
+        0.4122214708 * linear_rgb.r
+            + 0.5363325363 * linear_rgb.g
+            + 0.0514459929 * linear_rgb.b,
+        0.2119034982 * linear_rgb.r
+            + 0.6806995451 * linear_rgb.g
+            + 0.1073969566 * linear_rgb.b,
+        0.0883024619 * linear_rgb.r
+            + 0.2817188376 * linear_rgb.g
+            + 0.6299787005 * linear_rgb.b
+    );
+    vec3 root_lms = vec3(
+        signedCubeRoot(lms.x),
+        signedCubeRoot(lms.y),
+        signedCubeRoot(lms.z));
+    return vec3(
+        0.2104542553 * root_lms.x
+            + 0.7936177850 * root_lms.y
+            - 0.0040720468 * root_lms.z,
+        1.9779984951 * root_lms.x
+            - 2.4285922050 * root_lms.y
+            + 0.4505937099 * root_lms.z,
+        0.0259040371 * root_lms.x
+            + 0.7827717662 * root_lms.y
+            - 0.8086757660 * root_lms.z
+    );
 }
 
+// Convert OKLab back to linear sRGB without clipping its chroma.
+vec3 oklabToLinearSrgb(vec3 lab)
+{
+    vec3 root_lms = vec3(
+        lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z,
+        lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z,
+        lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z
+    );
+    vec3 lms = root_lms * root_lms * root_lms;
+    return vec3(
+        4.0767416621 * lms.x - 3.3077115913 * lms.y
+            + 0.2309699292 * lms.z,
+        -1.2684380046 * lms.x + 2.6097574011 * lms.y
+            - 0.3413193965 * lms.z,
+        -0.0041960863 * lms.x - 0.7034186147 * lms.y
+            + 1.7076147010 * lms.z
+    );
+}
+
+// Return whether a linear color lies inside the display cube.
+bool isInSrgbGamut(vec3 linear_rgb)
+{
+    return all(greaterThanEqual(linear_rgb, vec3(0.0)))
+        && all(lessThanEqual(linear_rgb, vec3(1.0)));
+}
+
+// Compress OKLab chroma at fixed perceived lightness and hue. A binary search
+// finds the sRGB cusp for this hue; the soft knee maps extreme spectral colors
+// to 85% of that cusp instead of clipping them to neon display primaries.
+vec3 perceptualGamutMap(vec3 linear_rgb)
+{
+    vec3 lab = linearSrgbToOklab(linear_rgb);
+    lab.x = clamp(lab.x, 0.0, 1.0);
+    float chroma = length(lab.yz);
+    if(chroma < BRDF_EPSILON)
+    {
+        return oklabToLinearSrgb(vec3(lab.x, 0.0, 0.0));
+    }
+
+    vec2 hue = lab.yz / chroma;
+    float lower_chroma = 0.0;
+    float upper_chroma = 0.5;
+    for(int iteration = 0; iteration < 10; ++iteration)
+    {
+        float candidate_chroma = 0.5 * (lower_chroma + upper_chroma);
+        vec3 candidate = oklabToLinearSrgb(
+            vec3(lab.x, hue * candidate_chroma));
+        if(isInSrgbGamut(candidate))
+        {
+            lower_chroma = candidate_chroma;
+        }
+        else
+        {
+            upper_chroma = candidate_chroma;
+        }
+    }
+
+    float gamut_chroma = lower_chroma;
+    float knee_chroma = GAMUT_KNEE_FRACTION * gamut_chroma;
+    float target_chroma = GAMUT_TARGET_FRACTION * gamut_chroma;
+    float mapped_chroma = chroma;
+    if(chroma > knee_chroma)
+    {
+        float compression_range = max(
+            target_chroma - knee_chroma, BRDF_EPSILON);
+        float excess = (chroma - knee_chroma) / compression_range;
+        mapped_chroma = knee_chroma
+                      + compression_range * (1.0 - exp(-excess));
+    }
+    return clamp(oklabToLinearSrgb(
+        vec3(lab.x, hue * mapped_chroma)), 0.0, 1.0);
+}
+
+// Normalize a vector without allowing a zero-length interpolation to produce
+// NaNs. Callers choose a fallback appropriate to their geometric role.
+vec3 safeNormalize(vec3 value, vec3 fallback)
+{
+    float length_squared = dot(value, value);
+    if(length_squared < BRDF_EPSILON)
+    {
+        return fallback;
+    }
+    return value * inversesqrt(length_squared);
+}
+
+// Construct a stable tangent for the rare case where interpolation cancels a
+// vertex tangent exactly.
+vec3 orthogonalVector(vec3 normal)
+{
+    vec3 reference = abs(normal.z) < 0.999
+                   ? vec3(0.0, 0.0, 1.0)
+                   : vec3(0.0, 1.0, 0.0);
+    return safeNormalize(cross(reference, normal), vec3(1.0, 0.0, 0.0));
+}
+
+// Interpolate four scalar texels with one two-dimensional weight.
 float bilinear(float value_00, float value_10, float value_01,
                float value_11, vec2 weight)
 {
@@ -98,18 +298,17 @@ float bilinear(float value_00, float value_10, float value_01,
     return mix(lower, upper, weight.y);
 }
 
-vec2 orientationVector(float encoded_orientation)
+// Map the unoriented green value onto its doubled-angle unit circle.
+vec2 doubledOrientation(float encoded_orientation)
 {
-    float doubled_angle = TAU * encoded_orientation;
+    float doubled_angle = 2.0 * PI * encoded_orientation;
     return vec2(cos(doubled_angle), sin(doubled_angle));
 }
 
-// Manually reconstruct the packed fields so the unoriented grating angle is
-// interpolated correctly across its equivalent 0- and 180-degree values.
-FoilControl sampleFoilControl(sampler2D control_texture,
-                              vec2 texture_coord)
+// Decode the version-2 packed control texture with orientation-safe filtering.
+FoilControl sampleFoilControl(vec2 texture_coord)
 {
-    ivec2 texture_size = textureSize(control_texture, 0);
+    ivec2 texture_size = textureSize(u_foil_control, 0);
     vec2 sample_position = clamp(texture_coord, 0.0, 1.0)
                          * vec2(texture_size) - 0.5;
     ivec2 lower_coord = ivec2(floor(sample_position));
@@ -123,184 +322,339 @@ FoilControl sampleFoilControl(sampler2D control_texture,
                            ivec2(0), upper_bound);
     ivec2 coord_11 = clamp(lower_coord + ivec2(1, 1),
                            ivec2(0), upper_bound);
+    vec4 value_00 = texelFetch(u_foil_control, coord_00, 0);
+    vec4 value_10 = texelFetch(u_foil_control, coord_10, 0);
+    vec4 value_01 = texelFetch(u_foil_control, coord_01, 0);
+    vec4 value_11 = texelFetch(u_foil_control, coord_11, 0);
 
-    vec4 value_00 = texelFetch(control_texture, coord_00, 0);
-    vec4 value_10 = texelFetch(control_texture, coord_10, 0);
-    vec4 value_01 = texelFetch(control_texture, coord_01, 0);
-    vec4 value_11 = texelFetch(control_texture, coord_11, 0);
+    float encoded_spacing = bilinear(
+        value_00.r, value_10.r, value_01.r, value_11.r, weight);
+    float disorder = bilinear(
+        value_00.b, value_10.b, value_01.b, value_11.b, weight);
+    float coverage = bilinear(
+        value_00.a, value_10.a, value_01.a, value_11.a, weight);
 
-    float reveal_value = bilinear(value_00.r, value_10.r,
-                                  value_01.r, value_11.r, weight);
-    float width_value = bilinear(value_00.b, value_10.b,
-                                 value_01.b, value_11.b, weight);
-    float coverage = bilinear(value_00.a, value_10.a,
-                              value_01.a, value_11.a, weight);
-
-    vec2 axis_00 = orientationVector(value_00.g);
-    vec2 axis_10 = orientationVector(value_10.g);
-    vec2 axis_01 = orientationVector(value_01.g);
-    vec2 axis_11 = orientationVector(value_11.g);
-    vec2 lower_axis = mix(axis_00, axis_10, weight.x);
-    vec2 upper_axis = mix(axis_01, axis_11, weight.x);
+    vec2 lower_axis = mix(doubledOrientation(value_00.g),
+                          doubledOrientation(value_10.g), weight.x);
+    vec2 upper_axis = mix(doubledOrientation(value_01.g),
+                          doubledOrientation(value_11.g), weight.x);
     vec2 doubled_axis = mix(lower_axis, upper_axis, weight.y);
-
-    // Perpendicular axes can cancel inside a filtering footprint. In that
-    // exceptional case, choose the closest texel rather than normalize zero.
-    if(dot(doubled_axis, doubled_axis) < 0.000001)
+    if(dot(doubled_axis, doubled_axis) < BRDF_EPSILON)
     {
-        vec2 nearest_lower = weight.x < 0.5 ? axis_00 : axis_10;
-        vec2 nearest_upper = weight.x < 0.5 ? axis_01 : axis_11;
-        doubled_axis = weight.y < 0.5 ? nearest_lower : nearest_upper;
+        doubled_axis = doubledOrientation(value_00.g);
     }
     doubled_axis = normalize(doubled_axis);
     float grating_angle = 0.5 * atan(doubled_axis.y, doubled_axis.x);
 
     FoilControl control;
-    control.reveal = mix(REVEAL_MIN, REVEAL_MAX, reveal_value);
-    control.grating_axis = vec2(cos(grating_angle),
-                                sin(grating_angle));
-    control.reveal_width = mix(WIDTH_MIN, WIDTH_MAX, width_value);
+    control.groove_spacing_um = GROOVE_SPACING_MAX_UM * pow(
+        GROOVE_SPACING_MIN_UM / GROOVE_SPACING_MAX_UM,
+        encoded_spacing);
+    control.grating_axis = vec2(cos(grating_angle), sin(grating_angle));
+    control.disorder = clamp(disorder, 0.0, 1.0);
     control.coverage = clamp(coverage, 0.0, 1.0);
     return control;
 }
 
-vec3 evaluateDirectionalFoil(FoilControl control, vec3 base_color,
-                             vec3 light_direction, vec3 view_direction,
-                             vec3 normal, vec3 tangent, vec3 bitangent)
+// Interpolate the source-weighted CIE table without float texture filtering.
+vec3 sampleSpectralXyz(float wavelength_um)
+{
+    if(wavelength_um < VISIBLE_WAVELENGTH_MIN_UM ||
+       wavelength_um > VISIBLE_WAVELENGTH_MAX_UM)
+    {
+        return vec3(0.0);
+    }
+
+    float position = (wavelength_um - VISIBLE_WAVELENGTH_MIN_UM) * 1000.0;
+    int lower_index = min(int(floor(position)), 400);
+    int upper_index = min(lower_index + 1, 400);
+    float weight = position - float(lower_index);
+    vec3 lower = texelFetch(u_spectral_xyz, ivec2(lower_index, 0), 0).rgb;
+    vec3 upper = texelFetch(u_spectral_xyz, ivec2(upper_index, 0), 0).rgb;
+    return mix(lower, upper, weight);
+}
+
+// Evaluate the isotropic GGX normal distribution.
+float distributionGgx(float normal_half)
+{
+    float alpha_squared = FOIL_GGX_ROUGHNESS * FOIL_GGX_ROUGHNESS;
+    float denominator = normal_half * normal_half
+                      * (alpha_squared - 1.0) + 1.0;
+    return alpha_squared
+         / max(PI * denominator * denominator, BRDF_EPSILON);
+}
+
+// Evaluate height-correlated Smith visibility including the BRDF denominator.
+float visibilitySmithGgx(float normal_light, float normal_view)
+{
+    float alpha_squared = FOIL_GGX_ROUGHNESS * FOIL_GGX_ROUGHNESS;
+    float view_term = normal_light * sqrt(
+        normal_view * normal_view * (1.0 - alpha_squared)
+        + alpha_squared);
+    float light_term = normal_view * sqrt(
+        normal_light * normal_light * (1.0 - alpha_squared)
+        + alpha_squared);
+    return 0.5 / max(view_term + light_term, BRDF_EPSILON);
+}
+
+// Approximate neutral coating Fresnel reflectance.
+vec3 fresnelSchlick(float view_half)
+{
+    return FOIL_F_0 + (vec3(1.0) - FOIL_F_0)
+         * pow(1.0 - view_half, 5.0);
+}
+
+// Evaluate the ordinary zeroth-order reflection BRDF.
+vec3 evaluateSpecularBrdf(vec3 light_direction, vec3 view_direction,
+                          vec3 normal)
+{
+    vec3 half_sum = light_direction + view_direction;
+    if(dot(half_sum, half_sum) < BRDF_EPSILON)
+    {
+        return vec3(0.0);
+    }
+    vec3 half_vector = normalize(half_sum);
+    float normal_light = max(dot(normal, light_direction), 0.0);
+    float normal_view = max(dot(normal, view_direction), 0.0);
+    float normal_half = max(dot(normal, half_vector), 0.0);
+    float view_half = max(dot(view_direction, half_vector), 0.0);
+    return distributionGgx(normal_half)
+         * visibilitySmithGgx(normal_light, normal_view)
+         * fresnelSchlick(view_half);
+}
+
+// Evaluate the normalized cross-groove density from packed disorder.
+float crossGrooveLobe(float cross_coordinate, float disorder,
+                      float source_sigma)
+{
+    float disorder_squared = disorder * disorder;
+    float material_width = mix(0.008, 0.16, disorder_squared);
+    float width = sqrt(material_width * material_width
+                     + source_sigma * source_sigma);
+    float normalized = cross_coordinate / width;
+    return exp(-0.5 * normalized * normalized)
+         / (sqrt(2.0 * PI) * width);
+}
+
+// Approximate period-disorder convolution with three spectral taps.
+vec3 sampleDisorderedSpectrum(float wavelength_um, float disorder,
+                              float source_width_um)
+{
+#if SPECTRAL_TAP_COUNT == 1
+    return sampleSpectralXyz(wavelength_um);
+#elif SPECTRAL_TAP_COUNT == 3
+    float relative_spread = mix(0.003, 0.08, disorder * disorder);
+    float material_width_um = wavelength_um * relative_spread;
+    float wavelength_width = sqrt(
+        material_width_um * material_width_um
+        + source_width_um * source_width_um);
+    return 0.25 * sampleSpectralXyz(wavelength_um - wavelength_width)
+         + 0.50 * sampleSpectralXyz(wavelength_um)
+         + 0.25 * sampleSpectralXyz(wavelength_um + wavelength_width);
+#elif SPECTRAL_TAP_COUNT == 9
+    // A normalized binomial kernel approximates a Gaussian without allowing
+    // a broad source to degenerate into three isolated spectral primaries.
+    float relative_spread = mix(0.003, 0.08, disorder * disorder);
+    float material_width_um = wavelength_um * relative_spread;
+    float wavelength_width = sqrt(
+        material_width_um * material_width_um
+        + source_width_um * source_width_um);
+    float step_width = wavelength_width / sqrt(2.0);
+    return (sampleSpectralXyz(wavelength_um - 4.0 * step_width)
+          + 8.0 * sampleSpectralXyz(wavelength_um - 3.0 * step_width)
+          + 28.0 * sampleSpectralXyz(wavelength_um - 2.0 * step_width)
+          + 56.0 * sampleSpectralXyz(wavelength_um - step_width)
+          + 70.0 * sampleSpectralXyz(wavelength_um)
+          + 56.0 * sampleSpectralXyz(wavelength_um + step_width)
+          + 28.0 * sampleSpectralXyz(wavelength_um + 2.0 * step_width)
+          + 8.0 * sampleSpectralXyz(wavelength_um + 3.0 * step_width)
+          + sampleSpectralXyz(wavelength_um + 4.0 * step_width)) / 256.0;
+#else
+#error Unsupported SPECTRAL_TAP_COUNT
+#endif
+}
+
+// Allocate half the nonzero-order energy to the visible signed order.
+float orderEfficiency(int order_index)
+{
+#if DIFFRACTION_ORDER > 0
+    return order_index + 1 == DIFFRACTION_ORDER
+         ? SIGNED_DIFFRACTION_ENERGY
+         : 0.0;
+#else
+    float weight_sum = 0.0;
+    for(int index = 0; index < ORDER_COUNT; ++index)
+    {
+        weight_sum += exp(-ORDER_DECAY * float(index));
+    }
+    float weight = exp(-ORDER_DECAY * float(order_index));
+    return SIGNED_DIFFRACTION_ENERGY * weight / weight_sum;
+#endif
+}
+
+// Evaluate all supported nonzero diffraction orders in CIE XYZ.
+vec3 evaluateDiffractionXyz(FoilControl control,
+                            vec3 light_direction, vec3 view_direction,
+                            vec3 normal, vec3 tangent, vec3 bitangent,
+                            float source_sigma)
 {
     vec3 grating = control.grating_axis.x * tangent
                  + control.grating_axis.y * bitangent;
-    vec3 perpendicular = -control.grating_axis.y * tangent
-                       + control.grating_axis.x * bitangent;
+    vec3 groove = -control.grating_axis.y * tangent
+                + control.grating_axis.x * bitangent;
+    vec3 direction_sum = light_direction + view_direction;
+    vec3 tangent_sum = direction_sum
+                     - normal * dot(direction_sum, normal);
+    float order_coordinate = abs(dot(tangent_sum, grating));
+    float cross_coordinate = dot(tangent_sum, groove);
+    float cross_response = crossGrooveLobe(
+        cross_coordinate, control.disorder, source_sigma);
+    vec3 diffraction_xyz = vec3(0.0);
 
-    vec3 half_sum = light_direction + view_direction;
-    vec3 tangent_half = half_sum - dot(half_sum, normal) * normal;
-    float u = dot(tangent_half, grating);
-    float v = dot(tangent_half, perpendicular);
-
-    float width_u = max(control.reveal_width, WIDTH_MIN);
-
-    // Keep wavelength separation narrow along the authored sweep direction,
-    // but accept a broader range of viewing directions across the grating.
-    // Coupling both widths made the foil visible only in a tiny solid angle.
-    float order_coordinate = abs(u);
-    float lower_edge = control.reveal * VISIBLE_WAVELENGTH_MIN
-                     / REFERENCE_WAVELENGTH;
-    float upper_edge = control.reveal * VISIBLE_WAVELENGTH_MAX
-                     / REFERENCE_WAVELENGTH;
-    float lower_envelope = smoothstep(lower_edge - width_u,
-                                      lower_edge, order_coordinate);
-    float upper_envelope = 1.0 - smoothstep(upper_edge,
-                                            upper_edge + width_u,
-                                            order_coordinate);
-    float local_v = v / PERPENDICULAR_WIDTH;
-    float perpendicular_envelope = exp(-0.5 * local_v * local_v);
-    float envelope = lower_envelope * upper_envelope
-                   * perpendicular_envelope;
-
-    // Invert the grating relation to obtain one continuous wavelength. The
-    // published Zucconi6 fit approximates display-space colors, so convert it
-    // to linear space before adding it to the linearly decoded artwork.
-    float wavelength = REFERENCE_WAVELENGTH * order_coordinate
-                     / max(control.reveal, REVEAL_MIN);
-    vec3 diffraction = linearColor(spectralZucconi6(wavelength))
-                     * envelope;
-
-    float visibility = max(diffraction.r,
-                           max(diffraction.g, diffraction.b));
-    float normal_view = clamp(dot(normal, view_direction), 0.0, 1.0);
-    float fresnel = 0.06 + 0.94 * pow(1.0 - normal_view, 5.0);
-
-    // Outside the authored angular lobe the foil surface becomes the original
-    // artwork exactly. The directional response deliberately contains no
-    // neutral Phong highlight: it would wash the narrow rainbow out to white.
-    vec3 foil_color = base_color * mix(1.0, 0.62, visibility);
-    foil_color += diffraction * (0.82 + 0.24 * fresnel);
-    return foil_color;
+    for(int order_index = 0; order_index < ORDER_COUNT; ++order_index)
+    {
+#if DIFFRACTION_ORDER > 0
+        if(order_index + 1 != DIFFRACTION_ORDER)
+        {
+            continue;
+        }
+#endif
+        float order = float(order_index + 1);
+        float wavelength_um = control.groove_spacing_um
+                            * order_coordinate / order;
+        float source_width_um = control.groove_spacing_um
+                              * source_sigma / order;
+        vec3 spectral_xyz = sampleDisorderedSpectrum(
+            wavelength_um, control.disorder, source_width_um);
+        float jacobian = SPECTRAL_JACOBIAN_SCALE
+                       * control.groove_spacing_um / order;
+        diffraction_xyz += orderEfficiency(order_index)
+                         * cross_response * jacobian
+                         * spectral_xyz;
+    }
+    return diffraction_xyz;
 }
 
-vec3 evaluateWideAngleFoil(vec3 base_color, vec3 light_direction,
-                           vec3 view_direction, vec3 normal,
-                           vec3 tangent, vec3 bitangent,
-                           vec3 model_position)
+// Evaluate nonspectral card layers without radiance or cosine factors.
+vec3 evaluateOrdinaryBrdf(FoilControl control, vec3 albedo,
+                          vec3 light_direction, vec3 view_direction,
+                          vec3 normal)
 {
-    vec3 reflection = reflect(-view_direction, normal);
-    vec2 reflected_slope = vec2(dot(reflection, tangent),
-                                dot(reflection, bitangent));
+    float print_energy = mix(1.0, TRANSMITTED_PRINT_ENERGY,
+                             control.coverage);
+    vec3 print_brdf = print_energy * albedo / PI;
+    if(control.coverage > 0.0)
+    {
+        vec3 specular_brdf = ZERO_ORDER_ENERGY * evaluateSpecularBrdf(
+            light_direction, view_direction, normal);
+        print_brdf += control.coverage * specular_brdf;
+    }
+    return print_brdf;
+}
 
-    const float GRATING_ANGLE = 0.35;
-    vec2 grating_direction = vec2(cos(GRATING_ANGLE),
-                                  sin(GRATING_ANGLE));
-    vec2 second_grating = vec2(-grating_direction.y,
-                               grating_direction.x);
-    vec2 surface_position = vec2(model_position.x, model_position.z);
+// Integrate all BRDF components over the deterministic disk-light samples.
+vec3 integrateDiskLight(FoilControl control, vec3 albedo,
+                        vec3 view_direction, vec3 normal,
+                        vec3 tangent, vec3 bitangent)
+{
+    float light_area = PI * u_light_radius * u_light_radius;
+    vec3 direct_rgb = vec3(0.0);
+    vec3 diffraction_xyz = vec3(0.0);
 
-    float fine_grain = hash21(floor(surface_position * 1350.0));
-    float phase_a = dot(reflected_slope, grating_direction) * 2.35;
-    phase_a += dot(surface_position, grating_direction) * 0.68;
-    phase_a += (fine_grain - 0.5) * 0.025;
-    float phase_b = dot(reflected_slope, second_grating) * 1.55;
-    phase_b -= dot(surface_position, second_grating) * 0.43;
+    for(int sample_index = 0;
+        sample_index < LIGHT_SAMPLE_COUNT; ++sample_index)
+    {
+        vec2 disk_coord = LIGHT_SAMPLES[sample_index];
+        vec3 sample_position = u_light_position
+                             + u_light_radius
+                             * (disk_coord.x * u_light_axis_x
+                                + disk_coord.y * u_light_axis_y);
+        vec3 to_light = sample_position - v_view_position;
+        float distance_squared = dot(to_light, to_light);
+        vec3 light_direction = to_light
+                             * inversesqrt(max(distance_squared,
+                                               BRDF_EPSILON));
+        float surface_cosine = max(dot(normal, light_direction), 0.0);
+        float emitter_cosine = max(dot(u_light_normal,
+                                       -light_direction), 0.0);
+        if(surface_cosine <= 0.0 || emitter_cosine <= 0.0)
+        {
+            continue;
+        }
 
-    vec3 diffraction = spectrum(phase_a);
-    diffraction = mix(diffraction, spectrum(phase_b + 0.19), 0.28);
+        float sample_weight = light_area / float(LIGHT_SAMPLE_COUNT)
+                            * u_light_radiance * surface_cosine
+                            * emitter_cosine
+                            / max(distance_squared, BRDF_EPSILON);
+        direct_rgb += sample_weight * evaluateOrdinaryBrdf(
+            control, albedo, light_direction, view_direction, normal);
+    }
 
-    float normal_view = clamp(dot(normal, view_direction), 0.0, 1.0);
-    float fresnel = 0.06 + 0.94 * pow(1.0 - normal_view, 5.0);
-    float tilt_response = smoothstep(0.03, 0.58,
-                                     length(reflected_slope));
-    vec3 half_direction = normalize(light_direction + view_direction);
-    float highlight = pow(max(dot(normal, half_direction), 0.0), 110.0);
+    // A handful of point samples visibly duplicate a narrow rainbow. For the
+    // diffraction layer, convolve one center ray with the continuous angular
+    // footprint of the disk instead. A uniform disk coordinate has standard
+    // deviation R/2; the distant-light angular approximation is therefore
+    // R/(2D). It broadens both the cross-groove lobe and selected wavelength.
+    if(control.coverage > 0.0)
+    {
+        vec3 center_vector = u_light_position - v_view_position;
+        float center_distance_squared = dot(center_vector, center_vector);
+        vec3 center_direction = center_vector * inversesqrt(
+            max(center_distance_squared, BRDF_EPSILON));
+        float surface_cosine = max(dot(normal, center_direction), 0.0);
+        float emitter_cosine = max(dot(u_light_normal,
+                                       -center_direction), 0.0);
+        if(surface_cosine > 0.0 && emitter_cosine > 0.0)
+        {
+            float center_weight = light_area * u_light_radiance
+                                * surface_cosine * emitter_cosine
+                                / max(center_distance_squared,
+                                      BRDF_EPSILON);
+            float source_sigma = 0.5 * u_light_radius * inversesqrt(
+                max(center_distance_squared, BRDF_EPSILON));
+            diffraction_xyz = center_weight * control.coverage
+                            * evaluateDiffractionXyz(
+                                control, center_direction, view_direction,
+                                normal, tangent, bitangent, source_sigma);
+        }
+    }
 
-    float sparkle_seed = hash21(floor(surface_position * 720.0) + 19.0);
-    float sparkle_mask = smoothstep(0.965, 1.0, sparkle_seed);
-    float sparkle = sparkle_mask
-                  * pow(max(dot(normal, half_direction), 0.0), 38.0);
-
-    float color_strength = mix(0.27, 0.82, tilt_response);
-    color_strength += fresnel * 0.18;
-    vec3 foil_color = base_color * mix(0.90, 0.66, tilt_response);
-    foil_color += diffraction * color_strength;
-    foil_color += vec3(highlight * 0.72 + sparkle * 1.35);
-    return foil_color;
+    return direct_rgb + xyzToLinearSrgb(diffraction_xyz);
 }
 
 void main()
 {
-    vec4 artwork_sample = texture(u_texture, v_texcoord);
-    FoilControl control = sampleFoilControl(u_foil_control,
-                                            v_texcoord);
+    vec4 artwork_sample = texture(u_artwork, v_texcoord);
+    vec3 albedo = srgbToLinear(artwork_sample.rgb);
+    FoilControl control = sampleFoilControl(v_texcoord);
+    vec3 view_direction = safeNormalize(
+        -v_view_position, vec3(0.0, 0.0, 1.0));
+    vec3 normal = safeNormalize(v_view_normal, vec3(0.0, 0.0, 1.0));
+    vec3 tangent = safeNormalize(
+        v_view_tangent - normal * dot(v_view_tangent, normal),
+        orthogonalVector(normal));
+    vec3 bitangent = safeNormalize(
+        v_view_bitangent - normal * dot(v_view_bitangent, normal),
+        cross(normal, tangent));
 
-    vec3 view_direction = normalize(-v_view_position);
-    mat3 view_rotation = mat3(u_view);
-    vec3 normal = normalize(view_rotation * vec3(0.0, -1.0, 0.0));
-    vec3 tangent = normalize(view_rotation * vec3(1.0, 0.0, 0.0));
-    vec3 bitangent = normalize(view_rotation * vec3(0.0, 0.0, 1.0));
     if(dot(normal, view_direction) < 0.0)
     {
         normal = -normal;
+        bitangent = -bitangent;
     }
 
-    vec3 light_direction = normalize(vec3(-0.35, 0.45, 0.82));
-    vec3 base_color = linearColor(artwork_sample.rgb);
-    vec3 foil_color;
-    if(u_foil_kind == FOIL_KIND_DIRECTIONAL)
-    {
-        foil_color = evaluateDirectionalFoil(
-            control, base_color, light_direction, view_direction,
-            normal, tangent, bitangent);
-    }
-    else if(u_foil_kind == FOIL_KIND_WIDE_ANGLE)
-    {
-        foil_color = evaluateWideAngleFoil(
-            base_color, light_direction, view_direction, normal,
-            tangent, bitangent, v_model_position);
-    }
-    else
-    {
-        foil_color = base_color;
-    }
+    vec3 hdr_color = integrateDiskLight(
+        control, albedo, view_direction, normal, tangent, bitangent);
+    float ambient_energy = mix(1.0, TRANSMITTED_PRINT_ENERGY,
+                               control.coverage);
+    hdr_color += AMBIENT_PRINT_IRRADIANCE * ambient_energy * albedo;
 
-    vec3 final_color = mix(base_color, foil_color, control.coverage);
-    out_color = vec4(displayColor(final_color), artwork_sample.a);
+    vec3 tone_mapped = toneMap(hdr_color);
+    // The expensive perceptual search is needed only where spectral foil is
+    // present. Ordinary decoded artwork under neutral light remains in sRGB.
+    vec3 display_linear = control.coverage > 0.0
+                        ? perceptualGamutMap(tone_mapped)
+                        : clamp(tone_mapped, 0.0, 1.0);
+    out_color = vec4(linearToSrgb(display_linear),
+                     artwork_sample.a);
 }

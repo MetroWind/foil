@@ -1,146 +1,167 @@
+/** Load and parse one OBJ resource during demo initialization. */
+function loadModel(url)
+{
+    const request = new XMLHttpRequest();
+    request.open("GET", url, false);
+    request.send(null);
+    if(request.status != 200 && request.status != 0)
+    {
+        throw(new Error(`Failed to load ${url}: HTTP ${request.status}`));
+    }
+    return parseOBJ(request.responseText);
+}
+
+/** Construct the physical card material and every parsed geometry. */
 function initScene(gl, program, obj_model)
 {
-    // This object has the same shape as the planned card manifest. Change
-    // "directional" to "wide_angle" to select the broad foil model.
     const card_description = {
         artwork: "card_texture.png",
         foil: {
-            kind: "directional",
-            // Version the URL when the packed asset changes. Browsers may
-            // otherwise keep an older control map during local development.
-            control: "foil_control.png?version=wide-viewing-cone",
+            kind: "physical_linear",
+            control: "foil_control_v2.png?version=constant-spacing-1",
         },
     };
-    const material = new CardMaterial(
-        gl, card_description.artwork, card_description.foil.kind,
-        card_description.foil.control);
-
-    let models = [];
-    for(const geo of obj_model.geometries)
+    if(card_description.foil.kind != "physical_linear")
     {
-        models.push(new Model(gl, program, geo.data.position,
-                              geo.data.texcoord, material));
+        throw(new Error(
+            `Unsupported physical foil kind: ${card_description.foil.kind}`));
     }
 
+    const material = new PhysicalFoilMaterial(
+        gl, card_description.artwork, card_description.foil.control,
+        "spectral_xyz.bin");
+    const models = [];
+    for(const geometry of obj_model.geometries)
+    {
+        models.push(new Model(gl, program, geometry, material));
+    }
     return new Scene(models);
 }
 
-function drawScene(canvas, gl, program, scene, camera_rotation=[0.0, 0.0, 0.0])
+/** Build the projection, view, and interactive card-model matrices. */
+function calculateMatrices(canvas, camera_rotation)
 {
     const mat4 = glMatrix.mat4;
-    resizeCanvas(canvas, gl);
-
-    // Setup camera
-    const fov = Math.PI / 8;
     const aspect = canvas.clientWidth / canvas.clientHeight;
-    const z_near = 0.1;
-    const z_far = 100.0;
-    const projection_matrix = mat4.create();
-
-    // note: glMatrix always has the first argument
-    // as the destination to receive the result.
-    mat4.perspective(projection_matrix, fov, aspect, z_near, z_far);
-
-    // Set the drawing position to the "identity" point, which is
-    // the center of the scene.
-    const model_view_matrix = mat4.create();
-    // Now move the drawing position a bit to where we want to
-    // start drawing the square.
-    mat4.rotateX(model_view_matrix, model_view_matrix, Math.PI / 2);
-    mat4.translate(
-        model_view_matrix, // destination matrix
-        model_view_matrix, // matrix to translate
-        [0.0, -5.0, 0.0],
-    ); // amount to translate
-    mat4.rotateX(model_view_matrix, model_view_matrix, camera_rotation[0]);
-    mat4.rotateY(model_view_matrix, model_view_matrix, camera_rotation[1]);
-    mat4.rotateZ(model_view_matrix, model_view_matrix, camera_rotation[2]);
-
-    gl.uniformMatrix4fv(gl.getUniformLocation(program, "u_projection"),
-                        false, projection_matrix);
-    gl.uniformMatrix4fv(gl.getUniformLocation(program, "u_view"),
-                        false, model_view_matrix);
-
-    for(const model of scene.models)
-    {
-        model.vertex_array.use();
-        model.material.use(program);
-        gl.drawArrays(gl.TRIANGLES, 0, model.vertex_count);
-    }
+    const projection_matrix = mat4.perspective(
+        mat4.create(), Math.PI / 8.0, aspect, 0.1, 100.0);
+    const view_matrix = mat4.translate(
+        mat4.create(), mat4.create(), [0.0, 0.0, -5.0]);
+    const model_matrix = mat4.create();
+    mat4.rotateX(model_matrix, model_matrix, Math.PI / 2.0);
+    mat4.rotateX(model_matrix, model_matrix, camera_rotation[0]);
+    mat4.rotateZ(model_matrix, model_matrix, camera_rotation[1]);
+    return {projection_matrix, view_matrix, model_matrix};
 }
 
-// Usually mouse position (either x or y) is from 0 to canvas
-// width/height. This function normalizes it to [-0.5, 0.5] on the
-// shorter direction. (0, 0) is set to be the center of canvas.
+/** Normalize a pointer position around the center of the short canvas axis. */
 function getNormalizedMousePos(move_event, canvas)
 {
     const rect = canvas.getBoundingClientRect();
     const size = Math.min(rect.width, rect.height);
-    mouse_x = (move_event.clientX - rect.left - (rect.width - size) * 0.5) / size - 0.5;
-    // bottom is 0 in WebGL
-    mouse_y = (rect.height - (move_event.clientY - rect.top) - (rect.height - size) * 0.5) / size - 0.5;
+    const mouse_x = (move_event.clientX - rect.left
+                    - (rect.width - size) * 0.5) / size - 0.5;
+    const mouse_y = (rect.height - (move_event.clientY - rect.top)
+                    - (rect.height - size) * 0.5) / size - 0.5;
     return [mouse_x, mouse_y];
 }
 
-// This function returns a number ∈ (-0.5, 0.5). The return value
-// monotonically increases with x, and approaches both the lower and
-// upper bound asymptotically.
-function asyBound(x)
+/** Smoothly bound an unbounded pointer coordinate to a half turn. */
+function asymptoticBound(value)
 {
-    return Math.atan(x) / Math.PI;
+    return Math.atan(value) / Math.PI;
 }
 
+/** Internal compile-time shader variants for renderer quality. */
+const RENDER_QUALITY = Object.freeze({
+    LOW: Object.freeze({
+        LIGHT_SAMPLE_COUNT: 2,
+        ORDER_COUNT: 3,
+        SPECTRAL_TAP_COUNT: 1,
+    }),
+    DEFAULT: Object.freeze({
+        LIGHT_SAMPLE_COUNT: 4,
+        ORDER_COUNT: 4,
+        SPECTRAL_TAP_COUNT: 9,
+    }),
+    HIGH: Object.freeze({
+        LIGHT_SAMPLE_COUNT: 8,
+        ORDER_COUNT: 8,
+        SPECTRAL_TAP_COUNT: 9,
+    }),
+});
+
+// Internal calibration, deliberately separate from artist-authored fields.
+// A value of 1.0 uses the baseline energy budget; the supported range is
+// 0.0 through 6.0. Increasing it moves energy from print into diffraction.
+const FOIL_CALIBRATION = Object.freeze({
+    FOIL_INTENSITY: 1.0,
+});
+
+/** Initialize and run the physical foil demo. */
 function main()
 {
-    const canvas = document.getElementById("GLCanvas");
-    const gl = canvas.getContext("webgl2");
-    if(!gl)
+    try
     {
-        console.error("Failed to initialize WebGL 2.");
-        return;
-    }
+        const canvas = document.getElementById("GLCanvas");
+        const gl = canvas.getContext("webgl2");
+        if(!gl)
+        {
+            throw(new Error("Failed to initialize WebGL 2."));
+        }
 
-    gl.enable(gl.DEPTH_TEST); // Enable depth testing
-    gl.depthFunc(gl.LEQUAL); // Near things obscure far things
-    gl.enable(gl.CULL_FACE);
-    // setup GLSL program
-    const program = createProgramFromScripts(gl, "VertShader", "FragShader");
+        // Quality is a renderer policy, not an artist-authored material
+        // parameter. Keep the selected variant here so the shader loops have
+        // compile-time bounds on WebGL implementations that require unrolling.
+        const quality = RENDER_QUALITY.DEFAULT;
+        if(!Number.isFinite(FOIL_CALIBRATION.FOIL_INTENSITY)
+           || FOIL_CALIBRATION.FOIL_INTENSITY < 0.0
+           || FOIL_CALIBRATION.FOIL_INTENSITY > 6.0)
+        {
+            throw(new Error("FOIL_INTENSITY must be between 0.0 and 6.0."));
+        }
+        const shader_definitions = Object.assign(
+            {}, quality, FOIL_CALIBRATION);
+        const program = new ShaderProgram(
+            gl, "vert-shader.glsl?version=physical-brdf-6",
+            "frag-shader.glsl?version=physical-brdf-6",
+            shader_definitions);
+        const renderer = new Renderer(gl, program);
+        const scene = initScene(gl, program, loadModel("model/card.obj"));
+        // const light = new DiskLight(
+        //     [-1.5, 1.8, 2.0],  // Position: [x, y, z]
+        //     [1.5, -1.8, -2.0], // Direction the light faces
+        //     0.65,              // Radius
+        //     20.45,             // Radiance
+        // );
+        const light = new DiskLight(
+            [0, 0, 2.0],  // Position: [x, y, z]
+            [0, 0, -2.0], // Direction the light faces
+            1,              // Radius
+            3.6,             // Radiance
+        );
+        const camera_rotation = [0.0, 0.0];
 
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.useProgram(program);
+        /** Draw one animation frame using the latest pointer rotation. */
+        function render()
+        {
+            const matrices = calculateMatrices(canvas, camera_rotation);
+            renderer.draw(scene, matrices, light);
+            requestAnimationFrame(render);
+        }
 
-    let xhr = new XMLHttpRequest();
-    xhr.open("GET", "model/card.obj", false);
-    xhr.send(null);
-    if(xhr.status != 200)
-    {
-        throw("Failed to get model");
-    }
-    const model = parseOBJ(xhr.response);
-
-    let deltaTime = 0;
-    let then = 0;
-    let camera_rotation = [0.0, 0.0, 0.0]
-    // Draw the scene repeatedly
-
-    const scene = initScene(gl, program, model);
-    function render(now)
-    {
-        now *= 0.001; // convert to seconds
-        deltaTime = now - then;
-        then = now;
-
-        drawScene(canvas, gl, program, scene, camera_rotation);
+        canvas.addEventListener("mousemove", function rotateCard(event)
+        {
+            const position = getNormalizedMousePos(event, canvas);
+            camera_rotation[0] = -asymptoticBound(position[1] * 10.0);
+            camera_rotation[1] = -asymptoticBound(position[0] * 10.0);
+        });
         requestAnimationFrame(render);
     }
-    requestAnimationFrame(render, camera_rotation);
-    window.addEventListener('resize', () => resizeCanvas(canvas, gl));
-    canvas.addEventListener('mousemove', (e) => {
-        const pos = getNormalizedMousePos(e, canvas);
-        camera_rotation[0] = - asyBound(pos[1] * 10);
-        camera_rotation[2] = - asyBound(pos[0] * 10);
-    });
+    catch(error)
+    {
+        console.error(error);
+    }
 }
 
-window.addEventListener('load', main);
+window.addEventListener("load", main);

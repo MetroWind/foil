@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed.
+Implemented on 2026-08-17. Visual acceptance and browser/GPU performance
+validation remain pending.
 
 This document specifies the next foil renderer. It replaces the current
 artistically tuned directional effect with a physically based, rasterized
@@ -299,7 +300,7 @@ unblazed linear grating. Only one sign sends energy toward a particular
 outgoing direction. Therefore the shader loops over positive order magnitudes
 and uses a per-signed-order efficiency.
 
-An order contributes only when
+Each spectral lookup contributes only when
 
 $$
 \lambda_{\min}\le\lambda_m\le\lambda_{\max},
@@ -312,9 +313,12 @@ VISIBLE_WAVELENGTH_MIN_UM = 0.380
 VISIBLE_WAVELENGTH_MAX_UM = 0.780
 ```
 
-The production shader uses smooth spectral boundary weights over 5 nm to
-avoid a hard temporal edge when an order enters or leaves the visible range.
-The CPU reference also exposes an unsmoothed mode for equation tests.
+The lookup returns zero outside those bounds. There is deliberately no outer
+boundary gate on the order's center wavelength. Such a gate incorrectly cuts
+off the whole finite-source convolution while some of its wavelength samples
+remain visible, producing a hard spatial and temporal edge. Each convolution
+sample instead leaves the CIE interval independently; the near-zero CIE values
+at the endpoints provide the natural fade.
 
 ## Finite microstructure response
 
@@ -351,18 +355,29 @@ $$
 \sigma_{\lambda,m}=\rho_d\lambda_m.
 $$
 
-The shader approximates the resulting spectral convolution with three taps:
+The low-quality shader can approximate the resulting convolution with one or
+three taps. The default uses the normalized nine-tap binomial kernel
+
+$$
+(1,8,28,56,70,56,28,8,1)/256.
+$$
+
+With sample spacing $\sigma_{\lambda,m}/\sqrt2$, this kernel has standard
+deviation $\sigma_{\lambda,m}$. In expanded form,
 
 $$
 \overline{\mathbf X}(\lambda_m)=
-\tfrac14\mathbf X(\lambda_m-\sigma_{\lambda,m})+
-\tfrac12\mathbf X(\lambda_m)+
-\tfrac14\mathbf X(\lambda_m+\sigma_{\lambda,m}).
+\frac1{256}\sum_{j=-4}^{4}
+{8\choose j+4}\,
+\mathbf X\left(\lambda_m+
+\frac{j\sigma_{\lambda,m}}{\sqrt2}\right).
 $$
 
 Here $\mathbf X(\lambda)$ is the source-weighted CIE XYZ lookup described
-below. This quadrature is deliberately modest. It makes the blue field
-meaningful without multiplying runtime cost by a large spectral sample count.
+below. Nine taps remain inexpensive after diffraction was separated from disk
+point quadrature. Three taps were tested and rejected for the default tier:
+a broad source reduced to three isolated wavelength samples produced neon
+green, cyan, and magenta stripes instead of a convolved spectrum.
 
 The two widths are correlated because only one packed channel remains. A
 future asset version may separate period variation, orientation variation,
@@ -380,9 +395,9 @@ Runtime RCWA is outside scope. The initial shader uses an explicit normalized
 energy budget and a fixed symmetric order distribution. Define
 
 ```text
-ZERO_ORDER_ENERGY = 0.28
-TOTAL_DIFFRACTION_ENERGY = 0.52
-TRANSMITTED_PRINT_ENERGY = 0.12
+ZERO_ORDER_ENERGY = 0.20
+TOTAL_DIFFRACTION_ENERGY = 0.12
+TRANSMITTED_PRINT_ENERGY = 0.60
 ABSORBED_ENERGY = 0.08
 ```
 
@@ -399,18 +414,42 @@ $$
 \eta_m=\frac12 E_{\mathrm{diff}}w_m.
 $$
 
+An internal global calibration factor $I_f$ redistributes energy between the
+printed and diffracted layers:
+
+$$
+E_{\mathrm{diff}}'=I_f E_{\mathrm{diff}},
+\qquad
+E_{\mathrm{print}}'=E_{\mathrm{print}}
+-(I_f-1)E_{\mathrm{diff}}.
+$$
+
+Thus the complete allocation remains one. `FOIL_INTENSITY` is initially 1.5
+and may range from zero through six; six transfers all baseline print energy
+into diffraction. It is renderer calibration, not an artist-authored field,
+and does not change coverage. The demo declares it separately from quality:
+
+```js
+const FOIL_CALIBRATION = Object.freeze({
+    FOIL_INTENSITY: 1.5,
+});
+```
+
 Initial weights are generated from
 
 $$
-\widetilde w_m=\exp[-0.72(m-1)],
+\widetilde w_m=\exp[-3.00(m-1)],
 \qquad
 w_m=\frac{\widetilde w_m}
           {\sum_{k=1}^{M}\widetilde w_k}.
 $$
 
-This distribution is energy-bounded but not a claim about a particular
-commercial foil. It must be isolated behind `orderEfficiency()` so an RCWA,
-measured, or profile-derived lookup can replace it.
+The steeper decay is a fixed blazed-film approximation. It keeps higher orders
+in the physical calculation without rendering every order as an equally
+prominent repeated rainbow. This distribution is energy-bounded but not a
+claim about a particular commercial foil. It remains isolated behind
+`orderEfficiency()` so an RCWA, measured, or profile-derived lookup can
+replace it.
 
 The default quality level evaluates four order magnitudes. The shader supports
 up to eight:
@@ -522,23 +561,44 @@ in the fragment shader. The W3C specification provides reference conversion
 code and rational matrix coefficients.
 
 Negative RGB components are retained while diffraction orders and light
-samples are accumulated. They are clamped to zero only after the complete
-card-lighting result has been assembled and before tone mapping.
+samples are accumulated. They are not independently clamped: monochromatic
+spectral colors frequently lie outside the sRGB triangle, and channel clipping
+maps them to artificial display primaries.
 
 ## HDR accumulation and output
 
 All direct-light samples, BRDF terms, and spectral terms are accumulated in
 unbounded `highp vec3` values. Do not clamp each light or material layer.
 
-The initial implementation remains single pass and tone-maps in the card
-fragment shader. It uses the monotonic exponential operator
+The implementation remains single pass and tone-maps luminance in the card
+fragment shader. Let
 
 $$
-\mathbf c_{tm}=1-\exp(-E\mathbf c),
+Y=0.2126R+0.7152G+0.0722B.
 $$
 
-where $E$ is an internal exposure. Exponential mapping has no white-point
-parameter and cannot produce negative output after its input is clamped.
+It uses the monotonic exponential operator
+
+$$
+Y_{tm}=1-\exp(-EY),
+\qquad
+\mathbf c_{tm}=\frac{Y_{tm}}{Y}\mathbf c,
+$$
+
+where $E$ is an internal exposure. Scaling the complete color by one scalar
+preserves chromaticity; per-channel exponential mapping would change hue.
+
+The tone-mapped linear color is then converted to OKLab using Björn Ottosson's
+[reference matrices](https://bottosson.github.io/posts/oklab/). At fixed OKLab
+lightness and hue, a ten-iteration binary search finds the largest chroma
+inside the linear-sRGB cube. Chroma below 55% of that cusp is unchanged. Above
+the knee it is exponentially compressed toward 85% of the cusp. This maps
+out-of-gamut spectral colors into a displayable interior rather than clipping
+them to neon cyan, magenta, green, or red.
+
+Only the gamut-mapped result receives a final numerical clamp to the display
+cube. The clamp removes floating-point search tolerance and is not the color
+mapping operation.
 
 The exact sRGB output transfer is then applied:
 
@@ -647,17 +707,23 @@ painting alpha rather than by receiving a separate intensity control.
 
 ### Migration of the current demo texture
 
-The current red field encodes an artistic reveal coordinate. A one-time
-conversion must map it to spacing using the previous relation
+The old red field encodes an artistic reveal coordinate, not a physical groove
+period. An initial attempted migration mapped it to spacing using the previous
+relation
 
 $$
 d=\frac{0.550}{u_0}\;\mu\mathrm m
 $$
 
-and then invert the new logarithmic encoding. This preserves approximately
-where the first-order green response appears. The blue channel may be copied
-initially and retuned after area-light validation. Green and alpha are copied
-without semantic changes.
+and then inverted the new logarithmic encoding. Visual testing rejected that
+migration: the reveal ramp became a spatial groove-frequency ramp and painted
+repeated rainbows directly across every covered region.
+
+The demo asset therefore uses a constant $d=1.10\,\mu\mathrm m$, encoded as
+red byte 155. Green, blue, and alpha are copied without semantic changes. A
+future artist-authored spacing field may vary red where the intended physical
+film genuinely changes groove frequency, but an artistic reveal field must
+not be repurposed as one.
 
 The converted file should be named `foil_control_v2.png`. A versioned filename
 is preferable to a query string because the pixel contract has changed.
@@ -718,8 +784,8 @@ radiance: scalar D65 radiance
 `axis_x`, `axis_y`, and `normal` must be mutually orthonormal. JavaScript
 validates this within `1e-4` when the light is constructed.
 
-The shader stores a fixed low-discrepancy unit-disk point set. Each sample
-position is
+The shader stores a fixed low-discrepancy unit-disk point set for the printed
+and zeroth-order GGX layers. Each sample position is
 
 $$
 \mathbf x_j=\mathbf x_L+R(a_j\mathbf e_x+b_j\mathbf e_y).
@@ -742,14 +808,40 @@ All four lie at radius $1/\sqrt2$, and their mean squared radius is $1/2$,
 matching the mean squared radius of a uniformly sampled unit disk. The
 eight-sample variant uses four points at radius 0.5 on the coordinate axes and
 four points at radius $\sqrt{3}/2$ on the diagonals. The diagonal coordinates
-are $(\pm\sqrt{3/8},\pm\sqrt{3/8})$. The sixteen-sample variant is generated
-offline with the concentric square-to-disk mapping and committed as constants;
-it must be checked for zero centroid and mean squared radius within `1e-4` of
-0.5.
+are $(\pm\sqrt{3/8},\pm\sqrt{3/8})$. The sixteen-sample diagnostic variant
+uses two staggered rotational rings at radii $1/2$ and $\sqrt{3}/2$. It is
+committed as constants and has zero centroid and mean squared radius $1/2$.
 
-Because the disk has finite size, different samples produce different $u$ and
-therefore different wavelengths. This is the primary physically motivated
-mechanism that broadens the visible foil response.
+Directly applying those few points to a narrow diffraction lobe produces a
+visibly separate rainbow for each sample. The implemented diffraction layer
+therefore uses the disk-center direction and convolves the material response
+with the disk's continuous angular footprint. For a sufficiently distant
+uniform disk, either projected coordinate has standard deviation
+
+$$
+\sigma_L\simeq\frac{R}{2D},
+$$
+
+where $D$ is the center-to-surface distance. Independent material and source
+widths add in quadrature. The cross-groove width becomes
+
+$$
+\sigma_v'=\sqrt{\sigma_v^2+\sigma_L^2},
+$$
+
+and the wavelength width of order $m$ becomes
+
+$$
+\sigma_{\lambda,m}'=
+\sqrt{(\lambda_m\sigma_d)^2+
+      \left(\frac{d\sigma_L}{m}\right)^2}.
+$$
+
+The ordinary layers retain disk quadrature because their lobes are broad
+enough to sample without visible copies. This hybrid is a zeroth-order
+area-light approximation: it ignores perspective variation across the disk,
+but produces one continuously broadened diffraction response rather than
+several point-source replicas.
 
 ## JavaScript architecture
 
@@ -765,13 +857,17 @@ locations. Its public interface is:
 class ShaderProgram
 {
     /** Create, compile, and link a shader program from source URLs. */
-    constructor(gl, vertex_url, fragment_url);
+    constructor(gl, vertex_url, fragment_url,
+                fragment_definitions = {});
 
     /** Bind this program for subsequent drawing. */
     use();
 
     /** Return a required cached uniform location or throw. */
     uniform(name);
+
+    /** Return an optional cached uniform location or null. */
+    optionalUniform(name);
 
     /** Return a required cached attribute location or throw. */
     attribute(name);
@@ -796,7 +892,7 @@ class SpectralLut
     use(program, texture_unit);
 
     /** Register a function invoked after successful validation and upload. */
-    onload(listener);
+    onLoad(listener);
 }
 ```
 
@@ -889,7 +985,7 @@ const card_description = {
     artwork: "card_texture.png",
     foil: {
         kind: "physical_linear",
-        control: "foil_control_v2.png",
+        control: "foil_control_v2.png?version=constant-spacing-1",
     },
 };
 ```
@@ -913,36 +1009,28 @@ are removed rather than maintained indefinitely.
 The fragment shader is divided into small functions with explicit domains:
 
 ```glsl
-struct BrdfResult
-{
-    vec3 linear_rgb;
-    vec3 diffraction_xyz;
-};
-
 vec3 srgbToLinear(vec3 encoded);
 vec3 linearToSrgb(vec3 linear_color);
 vec3 toneMap(vec3 hdr_color);
 vec3 xyzToLinearSrgb(vec3 xyz);
-FoilControl sampleFoilControl(sampler2D texture_ref, vec2 uv);
+FoilControl sampleFoilControl(vec2 uv);
 vec3 sampleSpectralXyz(float wavelength_um);
-float distributionGgx(float normal_half, float roughness);
-float geometrySmith(float normal_light, float normal_view,
-                    float roughness);
-vec3 fresnelSchlick(float view_half, vec3 f_0);
-vec3 evaluatePrintBrdf(vec3 albedo);
+float distributionGgx(float normal_half);
+float visibilitySmithGgx(float normal_light, float normal_view);
+vec3 fresnelSchlick(float view_half);
 vec3 evaluateSpecularBrdf(...);
 vec3 evaluateDiffractionXyz(...);
-BrdfResult evaluateCardBrdf(...);
+vec3 evaluateOrdinaryBrdf(...);
 vec3 integrateDiskLight(...);
 ```
 
 Functions that return a BRDF do not multiply by incident radiance or
 $\mathbf n\cdot\boldsymbol{\omega}_i$. `integrateDiskLight()` owns those
-factors. Print and GGX values accumulate in `linear_rgb`; nonzero orders
-accumulate in `diffraction_xyz`. After every order and disk sample has been
-summed, `integrateDiskLight()` converts `diffraction_xyz` to linear sRGB and
-adds it to `linear_rgb`. This prevents premature gamut clipping and duplicated
-cosine terms.
+factors. Print and GGX values accumulate in linear RGB over the disk samples;
+nonzero orders accumulate in XYZ under the continuous disk approximation.
+After every order has been summed, `integrateDiskLight()` converts the complete
+XYZ result to linear sRGB and adds it to the ordinary result. This prevents
+premature gamut clipping and duplicated cosine terms.
 
 Global constants use uppercase names. Multiline function names use camel case
 as required by the repository style.
@@ -976,27 +1064,28 @@ but production behavior must not hide the original calculation in tests.
 
 ## Quality levels and performance
 
-The dominant cost is
+After continuous disk convolution, the dominant cost is approximately
 
 $$
-N_L\times M\times N_\lambda,
+N_L+M\times N_\lambda,
 $$
 
 where $N_L$ is disk samples, $M$ is active order magnitudes, and
-$N_\lambda=3$ is spectral convolution taps.
+$N_\lambda=9$ is the default spectral convolution tap count.
 
 Initial quality levels are:
 
 | Level | Disk samples | Orders | Spectral taps |
 |---|---:|---:|---:|
 | low | 2 | 3 | 1 |
-| default | 4 | 4 | 3 |
-| high | 8 | 8 | 3 |
+| default | 4 | 4 | 9 |
+| high | 8 | 8 | 9 |
 
-Default therefore performs 48 spectral texel reconstructions per foiled
-fragment. Coverage alpha is sampled before the expensive loops. When coverage
-is exactly zero, the shader may skip diffraction. This branch is coherent over
-large nonfoil regions and is expected to help rather than fragment execution.
+Default therefore performs 36 spectral texel reconstructions per foiled
+fragment, plus four ordinary-light evaluations. Coverage alpha is sampled
+before the expensive loops. When coverage is exactly zero, the shader skips
+both GGX and diffraction. This branch is coherent over large nonfoil regions
+and is expected to help rather than fragment execution.
 
 Quality selection is initially a renderer constant that chooses a shader
 variant. Compile-time loop bounds are preferred to dynamic uniform loop bounds
@@ -1017,6 +1106,7 @@ versions of:
 - order weighting and normalization;
 - cross-groove Gaussian evaluation;
 - spectral-table interpolation;
+- energy-preserving foil-intensity calibration;
 - XYZ-to-linear-sRGB conversion;
 - GGX distribution and masking; and
 - the sRGB transfer functions.
@@ -1151,7 +1241,7 @@ Each stage must compile and keep a usable demo.
 10. Implement one ideal first diffraction order and compare it to CPU math.
 11. Add CIE XYZ lookup and remove Zucconi6 from the physical path.
 12. Add normalized multi-order efficiencies.
-13. Add the cross-groove lobe and three-tap period-disorder convolution.
+13. Add the cross-groove lobe and spectral period-disorder convolution.
 14. Add coverage-layer composition and energy accounting.
 15. Add exposure, tone mapping, and exact sRGB output.
 16. Add quality variants and measure performance.
@@ -1200,9 +1290,11 @@ order-isolation debug views.
 
 ### Area-light sampling may show multiple copies
 
-Too few deterministic disk samples can appear as several distinct rainbows.
-Mitigation: use a rotationally balanced point set, compare four and eight
-samples, and allow microstructure convolution to cover residual gaps.
+Too few deterministic disk samples appear as several distinct rainbows;
+testing confirmed that increasing four samples to eight merely increases the
+number of copies. The implementation therefore applies the continuous disk
+convolution described in the disk-light section to diffraction, while keeping
+the deterministic points for print and GGX reflection.
 
 ### Packed 8-bit fields may band
 

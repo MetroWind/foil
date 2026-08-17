@@ -1,4 +1,5 @@
 // Copied from https://webgl2fundamentals.org/webgl/lessons/webgl-load-obj.html
+/** Parse OBJ text into nonindexed triangle geometry arrays. */
 function parseOBJ(text)
 {
     // because indices are base 1 let's just fill in the 0th data
@@ -161,4 +162,9 @@ function parseOBJ(text)
         geometries,
         materialLibs,
     };
+}
+
+if(typeof module != "undefined")
+{
+    module.exports = {parseOBJ};
 }

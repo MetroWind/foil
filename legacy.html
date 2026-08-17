@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en-US">
+  <head>
+    <meta charset="utf-8" />
+    <title>Legacy Foil Comparison</title>
+    <link rel="stylesheet" type="text/css" href="styles.css"
+          media="screen" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/3.4.1/gl-matrix-min.js"
+      crossorigin="anonymous"></script>
+    <!-- This page intentionally preserves the pre-BRDF renderer so the two
+         approaches can be judged side by side before legacy removal. -->
+    <script id="VertShader" src="vert_shader_legacy.glsl"
+            type="x-shader/x-vertex"></script>
+    <script id="FragShader"
+            src="frag_shader_legacy.glsl?version=zucconi6"
+            type="x-shader/x-fragment"></script>
+    <script src="libwebgl_legacy.js"></script>
+    <script src="obj.js"></script>
+    <script src="webgl_demo_legacy.js"></script>
+  </head>
+  <body>
+    <div id="Body">
+      <canvas id="GLCanvas"></canvas>
+    </div>
+  </body>
+</html>
