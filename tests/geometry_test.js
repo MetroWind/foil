@@ -172,9 +172,17 @@ function testMaterialModes()
 function testTextureDisposal()
 {
     let deletion_count = 0;
+    let listener_removal_count = 0;
     const texture = Object.create(Texture.prototype);
     texture.texture = {};
-    texture.image = {};
+    texture.image = {
+        removeEventListener: function removeEventListener()
+        {
+            ++listener_removal_count;
+        },
+    };
+    texture.handle_load = function handleLoad() {};
+    texture.handle_error = function handleError() {};
     texture.disposed = false;
     texture.gl = {
         deleteTexture: function deleteTexture()
@@ -185,6 +193,7 @@ function testTextureDisposal()
     texture.dispose();
     texture.dispose();
     assert.equal(deletion_count, 1);
+    assert.equal(listener_removal_count, 2);
     assert.equal(texture.image, null);
 }
 
@@ -201,6 +210,133 @@ function testBitmapDecodeOptions()
         premultiplyAlpha: "none",
         colorSpaceConversion: "none",
     });
+}
+
+/** Represent omitted foil controls with one transparent black data texel. */
+function testNoFoilTexture()
+{
+    let uploaded_color = null;
+    const gl = {
+        TEXTURE0: 0,
+        TEXTURE_2D: 1,
+        TEXTURE_MIN_FILTER: 2,
+        TEXTURE_MAG_FILTER: 3,
+        TEXTURE_WRAP_S: 4,
+        TEXTURE_WRAP_T: 5,
+        LINEAR: 6,
+        CLAMP_TO_EDGE: 7,
+        RGBA8: 8,
+        RGBA: 9,
+        UNSIGNED_BYTE: 10,
+        createTexture: function createTexture()
+        {
+            return {};
+        },
+        activeTexture: function activeTexture() {},
+        bindTexture: function bindTexture() {},
+        texParameteri: function texParameteri() {},
+        texImage2D: function uploadTexture()
+        {
+            uploaded_color = Array.from(arguments[8]);
+        },
+        deleteTexture: function deleteTexture() {},
+    };
+    const texture = Texture.constant(
+        gl, [0, 0, 0, 0], {role: TEXTURE_ROLE.DATA});
+    assert.deepEqual(uploaded_color, [0, 0, 0, 0]);
+    assert.equal(texture.width, 1);
+    assert.equal(texture.height, 1);
+    assert.equal(texture.role, TEXTURE_ROLE.DATA);
+    assert.throws(function rejectInvalidConstantTexture()
+    {
+        Texture.constant(gl, [0, 0, 0], {role: TEXTURE_ROLE.DATA});
+    }, /four bytes/);
+    texture.dispose();
+}
+
+/** Set anonymous CORS before assigning a remote image URL. */
+function testCorsTextureSetup()
+{
+    const assignment_order = [];
+    const previous_image = global.Image;
+    class FakeImage
+    {
+        /** Create an empty fake browser image. */
+        constructor()
+        {
+            this.listeners = new Map();
+        }
+
+        /** Store one simulated image event listener. */
+        addEventListener(name, listener)
+        {
+            this.listeners.set(name, listener);
+        }
+
+        /** Remove one simulated image event listener. */
+        removeEventListener(name)
+        {
+            this.listeners.delete(name);
+        }
+
+        /** Record when the CORS mode is assigned. */
+        set crossOrigin(value)
+        {
+            assignment_order.push(["cross_origin", value]);
+        }
+
+        /** Record when resource loading begins. */
+        set src(value)
+        {
+            assignment_order.push(["src", value]);
+        }
+    }
+    const gl = {
+        TEXTURE0: 0,
+        TEXTURE_2D: 1,
+        TEXTURE_MIN_FILTER: 2,
+        TEXTURE_MAG_FILTER: 3,
+        TEXTURE_WRAP_S: 4,
+        TEXTURE_WRAP_T: 5,
+        LINEAR: 6,
+        CLAMP_TO_EDGE: 7,
+        RGBA8: 8,
+        RGBA: 9,
+        UNSIGNED_BYTE: 10,
+        createTexture: function createTexture()
+        {
+            return {};
+        },
+        activeTexture: function activeTexture() {},
+        bindTexture: function bindTexture() {},
+        texParameteri: function texParameteri() {},
+        texImage2D: function texImage2D() {},
+        deleteTexture: function deleteTexture() {},
+    };
+
+    global.Image = FakeImage;
+    try
+    {
+        const url = "https://images.example/card.webp";
+        const texture = new Texture(
+            gl, url, {cross_origin: "anonymous"});
+        assert.deepEqual(assignment_order, [
+            ["cross_origin", "anonymous"],
+            ["src", url],
+        ]);
+        texture.dispose();
+    }
+    finally
+    {
+        if(previous_image == null)
+        {
+            delete global.Image;
+        }
+        else
+        {
+            global.Image = previous_image;
+        }
+    }
 }
 
 /** Keep JavaScript material mode values synchronized with the GLSL contract. */
@@ -344,6 +480,8 @@ testUniformLookups();
 testMaterialModes();
 testTextureDisposal();
 testBitmapDecodeOptions();
+testNoFoilTexture();
+testCorsTextureSetup();
 testMaterialShaderContract();
 testCardGeometry();
 testCardPartition();

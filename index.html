@@ -12,6 +12,7 @@
             crossorigin="anonymous"></script>
         <script src="libwebgl.js"></script>
         <script src="obj.js"></script>
+        <script src="card_link.js"></script>
         <script src="webgl-demo.js?version=physical-brdf-9"></script>
     </head>
     <body>
@@ -23,31 +24,70 @@
                     <p class="eyebrow">Live material preview</p>
                     <h1 id="UploadHeading">Foil card</h1>
                     <p class="introduction">
-                        Choose a front image and its packed foil controls. Both
-                        are sampled with normalized coordinates, so their
-                        formats and dimensions may differ.
+                        Choose a front image and, optionally, packed foil
+                        controls. Both are sampled with normalized coordinates,
+                        so their formats and dimensions may differ.
                     </p>
                 </header>
                 <form id="CardUploadForm">
-                    <label class="file_field" for="ArtworkFile">
-                        <span class="field_label">Front artwork</span>
-                        <input id="ArtworkFile" name="artwork" type="file"
-                               accept="image/*" />
-                        <span id="ArtworkMeta" class="file_meta"></span>
-                    </label>
-                    <label class="file_field" for="FoilControlFile">
-                        <span class="field_label">Foil controls</span>
-                        <input id="FoilControlFile" name="foil_control"
-                               type="file" accept="image/*" />
-                        <span id="FoilControlMeta" class="file_meta"></span>
-                    </label>
+                    <fieldset id="SourceMode" class="source_toggle">
+                        <legend>Image source</legend>
+                        <label>
+                            <input type="radio" name="source_mode"
+                                   value="files" checked />
+                            <span>Upload files</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="source_mode"
+                                   value="urls" />
+                            <span>Image URLs</span>
+                        </label>
+                    </fieldset>
+                    <div id="FileSourceFields" class="source_fields">
+                        <label class="image_field" for="ArtworkFile">
+                            <span class="field_label">Front artwork</span>
+                            <input id="ArtworkFile" name="artwork"
+                                   type="file" accept="image/*" />
+                            <span id="ArtworkMeta" class="file_meta"></span>
+                        </label>
+                        <label class="image_field" for="FoilControlFile">
+                            <span class="field_label">
+                                Foil controls <span>(optional)</span>
+                            </span>
+                            <input id="FoilControlFile" name="foil_control"
+                                   type="file" accept="image/*" />
+                            <span id="FoilControlMeta" class="file_meta">
+                            </span>
+                        </label>
+                    </div>
+                    <div id="UrlSourceFields" class="source_fields" hidden>
+                        <label class="image_field" for="ArtworkUrl">
+                            <span class="field_label">Front artwork URL</span>
+                            <input id="ArtworkUrl" name="artwork_url"
+                                   type="url" inputmode="url"
+                                   placeholder="https://example.com/art" />
+                        </label>
+                        <label class="image_field" for="FoilControlUrl">
+                            <span class="field_label">
+                                Foil control URL <span>(optional)</span>
+                            </span>
+                            <input id="FoilControlUrl" name="foil_control_url"
+                                   type="url" inputmode="url"
+                                   placeholder="https://example.com/foil.png" />
+                        </label>
+                        <p class="cors_hint">
+                            Remote servers must allow cross-origin image
+                            access (CORS). A successful preview updates the
+                            address with a shareable card link.
+                        </p>
+                    </div>
                     <p class="control_hint">
                         Control channels: reveal R, orientation G,
-                        reveal width B, coverage A.
+                        reveal width B, coverage A. Omit the map for no foil.
                     </p>
                     <div class="form_actions">
-                        <button id="ApplyCardFiles" type="submit">
-                            Preview files
+                        <button id="ApplyCardImages" type="submit">
+                            Preview images
                         </button>
                         <button id="ResetCardFiles" type="reset"
                                 class="secondary_button">
@@ -60,7 +100,8 @@
                     </p>
                 </form>
                 <p class="session_note">
-                    Images stay in this tab only and disappear when it closes.
+                    Files remain in this tab. URLs are fetched directly by
+                    your browser. This page stores neither one.
                 </p>
             </section>
             <p id="DragHint">Move the pointer over the card to tilt it.</p>

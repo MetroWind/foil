@@ -120,9 +120,28 @@ class CardMaterialController
     async applyFiles(artwork_file, control_file)
     {
         const revision = ++this.load_revision;
-        const material = await PhysicalFoilMaterial.fromFiles(
-            this.gl, artwork_file, control_file,
-            this.card_scene.default_material.spectral_lut);
+        return this.installMaterial(
+            PhysicalFoilMaterial.fromFiles(
+                this.gl, artwork_file, control_file,
+                this.card_scene.default_material.spectral_lut),
+            revision, control_file != null);
+    }
+
+    /** Load two image URLs and replace the front after both succeed. */
+    async applyUrls(artwork_url, control_url)
+    {
+        const revision = ++this.load_revision;
+        return this.installMaterial(
+            PhysicalFoilMaterial.fromUrls(
+                this.gl, artwork_url, control_url,
+                this.card_scene.default_material.spectral_lut),
+            revision, control_url != null);
+    }
+
+    /** Install one completed material unless newer work superseded it. */
+    async installMaterial(material_promise, revision, has_control)
+    {
+        const material = await material_promise;
         if(revision != this.load_revision)
         {
             material.dispose();
@@ -132,6 +151,7 @@ class CardMaterialController
         return {
             artwork: material.artwork,
             control: material.foil_control,
+            has_control,
         };
     }
 
@@ -157,21 +177,34 @@ function formatFileSize(byte_count)
     return `${(byte_count / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-/** Coordinate upload form state without exposing WebGL primitives. */
-class CardUploadUi
+/** Available sources for temporary card images. */
+const CARD_SOURCE_MODE = Object.freeze({
+    FILES: "files",
+    URLS: "urls",
+});
+
+/** Coordinate image-source form state without exposing WebGL primitives. */
+class CardImageUi
 {
     /** Bind the upload form to one card-material controller. */
     constructor(controller)
     {
         this.controller = controller;
         this.form = document.getElementById("CardUploadForm");
+        this.mode_inputs = Array.from(
+            this.form.querySelectorAll('input[name="source_mode"]'));
+        this.file_source = document.getElementById("FileSourceFields");
+        this.url_source = document.getElementById("UrlSourceFields");
         this.artwork_input = document.getElementById("ArtworkFile");
         this.control_input = document.getElementById("FoilControlFile");
+        this.artwork_url = document.getElementById("ArtworkUrl");
+        this.control_url = document.getElementById("FoilControlUrl");
         this.artwork_meta = document.getElementById("ArtworkMeta");
         this.control_meta = document.getElementById("FoilControlMeta");
-        this.apply_button = document.getElementById("ApplyCardFiles");
+        this.apply_button = document.getElementById("ApplyCardImages");
         this.reset_button = document.getElementById("ResetCardFiles");
         this.status = document.getElementById("UploadStatus");
+        this.is_busy = false;
 
         this.form.addEventListener("submit", this.apply.bind(this));
         this.form.addEventListener("reset", this.reset.bind(this));
@@ -179,10 +212,58 @@ class CardUploadUi
             "change", this.updateSelection.bind(this));
         this.control_input.addEventListener(
             "change", this.updateSelection.bind(this));
+        this.artwork_url.addEventListener(
+            "input", this.updateSelection.bind(this));
+        this.control_url.addEventListener(
+            "input", this.updateSelection.bind(this));
+        for(const mode_input of this.mode_inputs)
+        {
+            mode_input.addEventListener(
+                "change", this.updateMode.bind(this));
+        }
+        this.updateMode();
+        this.restoreCardLink();
+    }
+
+    /** Return the selected image-source mode. */
+    mode()
+    {
+        return this.mode_inputs.find(function findCheckedMode(input)
+        {
+            return input.checked;
+        }).value;
+    }
+
+    /** Show and enable only the controls belonging to the selected mode. */
+    updateMode()
+    {
+        const uses_files = this.mode() == CARD_SOURCE_MODE.FILES;
+        this.file_source.hidden = !uses_files;
+        this.url_source.hidden = uses_files;
+        this.setSourceInputs(
+            [this.artwork_input, this.control_input], uses_files);
+        this.setSourceInputs(
+            [this.artwork_url, this.control_url], !uses_files);
+        this.artwork_input.required = uses_files;
+        this.control_input.required = false;
+        this.artwork_url.required = !uses_files;
+        this.control_url.required = false;
+        this.apply_button.textContent = uses_files
+            ? "Preview files"
+            : "Preview URLs";
         this.updateSelection();
     }
 
-    /** Refresh filenames and whether the paired upload can be applied. */
+    /** Set validation and interaction state for one source group. */
+    setSourceInputs(inputs, is_active)
+    {
+        for(const input of inputs)
+        {
+            input.disabled = this.is_busy || !is_active;
+        }
+    }
+
+    /** Refresh source metadata and whether the pair can be applied. */
     updateSelection()
     {
         const artwork_file = this.artwork_input.files[0];
@@ -191,35 +272,63 @@ class CardUploadUi
             ? "No file selected"
             : `${artwork_file.name} · ${formatFileSize(artwork_file.size)}`;
         this.control_meta.textContent = control_file == null
-            ? "No file selected"
+            ? "No file selected · foil disabled"
             : `${control_file.name} · ${formatFileSize(control_file.size)}`;
-        this.apply_button.disabled = artwork_file == null
-            || control_file == null;
+        const files_ready = artwork_file != null;
+        const control_url_value = this.control_url.value.trim();
+        const urls_ready = this.artwork_url.value.trim() != ""
+            && this.artwork_url.validity.valid
+            && (control_url_value == "" || this.control_url.validity.valid);
+        const selection_ready = this.mode() == CARD_SOURCE_MODE.FILES
+            ? files_ready
+            : urls_ready;
+        this.apply_button.disabled = this.is_busy || !selection_ready;
     }
 
-    /** Decode and apply the currently selected file pair. */
+    /** Decode and apply the currently selected image pair. */
     async apply(event)
     {
         event.preventDefault();
-        const artwork_file = this.artwork_input.files[0];
-        const control_file = this.control_input.files[0];
-        if(artwork_file == null || control_file == null)
-        {
-            return;
-        }
+        await this.applySelection();
+    }
 
+    /** Decode and apply the selected sources without a form event. */
+    async applySelection()
+    {
+        const uses_files = this.mode() == CARD_SOURCE_MODE.FILES;
         this.setBusy(true);
-        this.showStatus("Decoding images…", "progress");
+        this.showStatus(
+            uses_files ? "Decoding images…" : "Loading image URLs…",
+            "progress");
         try
         {
-            const textures = await this.controller.applyFiles(
-                artwork_file, control_file);
+            const artwork_url = uses_files
+                ? null
+                : validateRemoteImageUrl(
+                    this.artwork_url.value.trim(), "Artwork URL");
+            const control_url_value = this.control_url.value.trim();
+            const control_url = uses_files || control_url_value == ""
+                ? null
+                : validateRemoteImageUrl(
+                    control_url_value, "Control URL");
+            const textures = uses_files
+                ? await this.controller.applyFiles(
+                    this.artwork_input.files[0],
+                    this.control_input.files[0] || null)
+                : await this.controller.applyUrls(
+                    artwork_url, control_url);
             if(textures != null)
             {
+                this.updateCardLink(
+                    uses_files ? null : artwork_url,
+                    uses_files ? null : control_url);
                 this.showStatus(
                     `Rendered artwork ${textures.artwork.width}×`
-                    + `${textures.artwork.height} with controls `
-                    + `${textures.control.width}×${textures.control.height}.`,
+                    + `${textures.artwork.height}`
+                    + (textures.has_control
+                        ? ` with controls ${textures.control.width}×`
+                          + `${textures.control.height}.`
+                        : " without foil controls."),
                     "success");
             }
         }
@@ -235,13 +344,53 @@ class CardUploadUi
         }
     }
 
+    /** Restore URL fields and render a card encoded in the page fragment. */
+    async restoreCardLink()
+    {
+        let card_link;
+        try
+        {
+            card_link = parseCardLink(window.location.href);
+        }
+        catch(error)
+        {
+            console.error(error);
+            this.showStatus(error.message, "error");
+            return;
+        }
+        if(card_link == null)
+        {
+            return;
+        }
+
+        this.mode_inputs.find(function findUrlMode(input)
+        {
+            return input.value == CARD_SOURCE_MODE.URLS;
+        }).checked = true;
+        this.artwork_url.value = card_link.artwork_url;
+        this.control_url.value = card_link.control_url || "";
+        this.updateMode();
+        await this.applySelection();
+    }
+
+    /** Replace the fragment with the current remote sources, or clear it. */
+    updateCardLink(artwork_url, control_url)
+    {
+        const page_url = artwork_url == null
+            ? clearCardLink(window.location.href)
+            : encodeCardLink(
+                window.location.href, artwork_url, control_url);
+        window.history.replaceState(null, "", page_url);
+    }
+
     /** Restore the bundled textures and clear both file selections. */
     reset()
     {
         this.controller.reset();
+        this.updateCardLink(null, null);
         window.setTimeout(function updateResetForm()
         {
-            this.updateSelection();
+            this.updateMode();
             this.showStatus("Bundled example restored.", "neutral");
         }.bind(this), 0);
     }
@@ -249,11 +398,14 @@ class CardUploadUi
     /** Toggle controls while browser image decoding is in progress. */
     setBusy(is_busy)
     {
-        this.artwork_input.disabled = is_busy;
-        this.control_input.disabled = is_busy;
-        this.apply_button.disabled = is_busy;
+        this.is_busy = is_busy;
+        for(const mode_input of this.mode_inputs)
+        {
+            mode_input.disabled = is_busy;
+        }
         this.reset_button.disabled = is_busy;
         this.form.setAttribute("aria-busy", String(is_busy));
+        this.updateMode();
     }
 
     /** Present one accessible upload status message. */
@@ -377,12 +529,12 @@ function main()
             gl, program, loadModel("model/card.obj"));
         const material_controller = new CardMaterialController(
             gl, card_scene);
-        const upload_ui = new CardUploadUi(material_controller);
+        const image_ui = new CardImageUi(material_controller);
         card_scene.default_material.ready.catch(
             function reportBundledTextureFailure(error)
             {
                 console.error(error);
-                upload_ui.showStatus(error.message, "error");
+                image_ui.showStatus(error.message, "error");
             });
         // const light = new DiskLight(
         //     [-1.5, 1.8, 2.0],  // Position: [x, y, z]

@@ -31,6 +31,19 @@ button
     border: 0;
 }
 
+fieldset
+{
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+[hidden]
+{
+    display: none !important;
+}
+
 #Body
 {
     position: relative;
@@ -106,7 +119,76 @@ h1
     gap: 0.8rem;
 }
 
-.file_field
+.source_toggle
+{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.2rem;
+    padding: 0.2rem;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 0.65rem;
+    background: rgb(255 255 255 / 4%);
+}
+
+.source_toggle legend
+{
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
+.source_toggle label
+{
+    position: relative;
+    cursor: pointer;
+}
+
+.source_toggle input
+{
+    position: absolute;
+    opacity: 0;
+}
+
+.source_toggle span
+{
+    display: block;
+    padding: 0.55rem 0.7rem;
+    color: #929dab;
+    border-radius: 0.45rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-align: center;
+}
+
+.source_toggle input:checked + span
+{
+    color: #10151b;
+    background: #f4f7fa;
+}
+
+.source_toggle input:focus-visible + span
+{
+    outline: 2px solid #80bfff;
+    outline-offset: 2px;
+}
+
+.source_toggle input:disabled + span
+{
+    cursor: wait;
+    opacity: 0.45;
+}
+
+.source_fields
+{
+    display: grid;
+    gap: 0.8rem;
+}
+
+.image_field
 {
     display: grid;
     gap: 0.42rem;
@@ -123,11 +205,42 @@ h1
     font-weight: 650;
 }
 
+.field_label span
+{
+    color: #7f8996;
+    font-size: 0.68rem;
+    font-weight: 500;
+}
+
 input[type="file"]
 {
     width: 100%;
     color: #b7c0cc;
     font-size: 0.72rem;
+}
+
+input[type="url"]
+{
+    width: 100%;
+    min-height: 2.35rem;
+    padding: 0.55rem 0.65rem;
+    color: #eef1f5;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 0.45rem;
+    outline: 0;
+    background: rgb(3 5 8 / 45%);
+    font-size: 0.72rem;
+}
+
+input[type="url"]::placeholder
+{
+    color: #66717f;
+}
+
+input[type="url"]:focus
+{
+    border-color: #80bfff;
+    box-shadow: 0 0 0 1px #80bfff;
 }
 
 input[type="file"]::file-selector-button
@@ -158,12 +271,18 @@ input[type="file"]:focus-visible
 }
 
 .control_hint,
+.cors_hint,
 .session_note
 {
     margin: 0;
     color: #8994a3;
     font-size: 0.68rem;
     line-height: 1.45;
+}
+
+.cors_hint
+{
+    margin: -0.2rem 0 0;
 }
 
 .form_actions
@@ -285,6 +404,8 @@ input:disabled
     }
 
     .control_hint,
+    .source_toggle,
+    .source_fields,
     .form_actions,
     .upload_status
     {
@@ -305,6 +426,8 @@ input:disabled
     }
 
     .control_hint,
+    .source_toggle,
+    .source_fields,
     .form_actions,
     .upload_status
     {

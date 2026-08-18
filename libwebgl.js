@@ -221,6 +221,7 @@ class Texture
 {
     /** Create a texture and start loading its image. */
     constructor(gl, url, {
+        cross_origin = null,
         flip_y = false,
         placeholder_color = null,
         role = TEXTURE_ROLE.COLOR,
@@ -244,6 +245,7 @@ class Texture
         this.flip_y = flip_y;
         this.role = role;
         this.url = url;
+        this.cross_origin = cross_origin;
         this.gl = gl;
         this.disposed = false;
         this.ready = new Promise(function storeTextureCompletion(
@@ -267,8 +269,14 @@ class Texture
         if(url != null)
         {
             this.image = new Image();
-            this.image.addEventListener("load", this.handleLoad.bind(this));
-            this.image.addEventListener("error", this.handleError.bind(this));
+            this.handle_load = this.handleLoad.bind(this);
+            this.handle_error = this.handleError.bind(this);
+            this.image.addEventListener("load", this.handle_load);
+            this.image.addEventListener("error", this.handle_error);
+            if(cross_origin != null)
+            {
+                this.image.crossOrigin = cross_origin;
+            }
             this.image.src = url;
         }
     }
@@ -305,6 +313,28 @@ class Texture
                 bitmap.close();
             }
         }
+    }
+
+    /** Create a ready one-pixel texture from an explicit RGBA value. */
+    static constant(gl, color, options = {})
+    {
+        const is_valid = Array.isArray(color) && color.length == 4
+            && color.every(function validateTextureByte(value)
+            {
+                return Number.isInteger(value) && value >= 0 && value <= 255;
+            });
+        if(!is_valid)
+        {
+            throw(new Error(
+                "Constant texture color must contain four bytes."));
+        }
+        const texture_options = Object.assign(
+            {}, options, {placeholder_color: color});
+        const texture = new Texture(gl, null, texture_options);
+        texture.width = 1;
+        texture.height = 1;
+        texture.resolve_load(texture);
+        return texture;
     }
 
     /** Upload one decoded source while preserving global pixel-unpack state. */
@@ -389,7 +419,11 @@ class Texture
     /** Report an image-load failure with its complete URL. */
     handleError()
     {
-        this.fail(new Error(`Failed to load texture: ${this.url}`));
+        const cors_hint = this.cross_origin == null
+            ? ""
+            : " The image server must allow cross-origin access (CORS).";
+        this.fail(new Error(
+            `Failed to load texture: ${this.url}.${cors_hint}`));
     }
 
     /** Reject this texture's completion promise with one load error. */
@@ -419,6 +453,11 @@ class Texture
     /** Release this texture's GPU allocation exactly once. */
     dispose()
     {
+        if(this.image != null)
+        {
+            this.image.removeEventListener("load", this.handle_load);
+            this.image.removeEventListener("error", this.handle_error);
+        }
         if(!this.disposed)
         {
             this.gl.deleteTexture(this.texture);
@@ -574,10 +613,14 @@ class PhysicalFoilMaterial
             artwork = await Texture.fromFile(gl, artwork_file, {
                 flip_y: true,
             });
-            foil_control = await Texture.fromFile(gl, control_file, {
-                flip_y: true,
-                role: TEXTURE_ROLE.DATA,
-            });
+            foil_control = control_file == null
+                ? Texture.constant(gl, [0, 0, 0, 0], {
+                    role: TEXTURE_ROLE.DATA,
+                })
+                : await Texture.fromFile(gl, control_file, {
+                    flip_y: true,
+                    role: TEXTURE_ROLE.DATA,
+                });
             const material = new PhysicalFoilMaterial(
                 gl, artwork, foil_control, spectral_lut);
             await material.ready;
@@ -593,6 +636,36 @@ class PhysicalFoilMaterial
             {
                 foil_control.dispose();
             }
+            throw(error);
+        }
+    }
+
+    /** Create a material from CORS-enabled image URLs and a shared LUT. */
+    static async fromUrls(gl, artwork_url, control_url, spectral_lut)
+    {
+        const artwork = new Texture(gl, artwork_url, {
+            cross_origin: "anonymous",
+            flip_y: true,
+        });
+        const foil_control = control_url == null
+            ? Texture.constant(gl, [0, 0, 0, 0], {
+                role: TEXTURE_ROLE.DATA,
+            })
+            : new Texture(gl, control_url, {
+                cross_origin: "anonymous",
+                flip_y: true,
+                role: TEXTURE_ROLE.DATA,
+            });
+        const material = new PhysicalFoilMaterial(
+            gl, artwork, foil_control, spectral_lut);
+        try
+        {
+            await material.ready;
+            return material;
+        }
+        catch(error)
+        {
+            material.dispose();
             throw(error);
         }
     }
