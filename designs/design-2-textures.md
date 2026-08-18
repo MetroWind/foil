@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed on 2026-08-17.
+Implemented on 2026-08-17.
+
+The initial front assets are 1000 by 1400 pixels. This is an asset choice,
+not a renderer constant; any matching pair satisfying the resolution contract
+below can replace them without changing JavaScript or GLSL.
 
 This document specifies how the renderer will replace its square card atlas
 with front-only artwork and foil-control textures. The implementation must

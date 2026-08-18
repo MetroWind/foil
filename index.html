@@ -1,17 +1,69 @@
 <!doctype html>
 <html lang="en-US">
-  <head>
-    <meta charset="utf-8" />
-    <title>My test page</title>
-    <link rel="stylesheet" type="text/css" href="styles.css" media="screen" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/3.4.1/gl-matrix-min.js" crossorigin="anonymous" ></script>
-    <script src="libwebgl.js"></script>
-    <script src="obj.js"></script>
-    <script src="webgl-demo.js?version=physical-brdf-7"></script>
-  </head>
-  <body>
-    <div id="Body">
-      <canvas id="GLCanvas"></canvas>
-    </div>
-  </body>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1" />
+        <title>Foil card preview</title>
+        <link rel="stylesheet" type="text/css" href="styles.css"
+              media="screen" />
+        <script
+            src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/3.4.1/gl-matrix-min.js"
+            crossorigin="anonymous"></script>
+        <script src="libwebgl.js"></script>
+        <script src="obj.js"></script>
+        <script src="webgl-demo.js?version=physical-brdf-9"></script>
+    </head>
+    <body>
+        <main id="Body">
+            <canvas id="GLCanvas" aria-label="Interactive foil card preview">
+            </canvas>
+            <section id="UploadPanel" aria-labelledby="UploadHeading">
+                <header class="panel_header">
+                    <p class="eyebrow">Live material preview</p>
+                    <h1 id="UploadHeading">Foil card</h1>
+                    <p class="introduction">
+                        Choose a front image and its packed foil controls. Both
+                        are sampled with normalized coordinates, so their
+                        formats and dimensions may differ.
+                    </p>
+                </header>
+                <form id="CardUploadForm">
+                    <label class="file_field" for="ArtworkFile">
+                        <span class="field_label">Front artwork</span>
+                        <input id="ArtworkFile" name="artwork" type="file"
+                               accept="image/*" />
+                        <span id="ArtworkMeta" class="file_meta"></span>
+                    </label>
+                    <label class="file_field" for="FoilControlFile">
+                        <span class="field_label">Foil controls</span>
+                        <input id="FoilControlFile" name="foil_control"
+                               type="file" accept="image/*" />
+                        <span id="FoilControlMeta" class="file_meta"></span>
+                    </label>
+                    <p class="control_hint">
+                        Control channels: reveal R, orientation G,
+                        reveal width B, coverage A.
+                    </p>
+                    <div class="form_actions">
+                        <button id="ApplyCardFiles" type="submit">
+                            Preview files
+                        </button>
+                        <button id="ResetCardFiles" type="reset"
+                                class="secondary_button">
+                            Use example
+                        </button>
+                    </div>
+                    <p id="UploadStatus" class="upload_status" role="status"
+                       aria-live="polite">
+                        Using the bundled example.
+                    </p>
+                </form>
+                <p class="session_note">
+                    Images stay in this tab only and disappear when it closes.
+                </p>
+            </section>
+            <p id="DragHint">Move the pointer over the card to tilt it.</p>
+        </main>
+    </body>
 </html>

@@ -706,10 +706,12 @@ painting alpha rather than by receiving a separate intensity control.
 
 ### Demo control asset
 
-The baseline demo asset is `foil_control_v2.png`. It uses a constant
+The baseline demo asset is `card_front_foil.png`. It uses a constant
 $d=1.10\,\mu\mathrm m$, encoded as red byte 155, with authored orientation,
 disorder, and coverage fields. A future artist-authored spacing field may vary
 red where the intended physical film genuinely changes groove frequency.
+Its front-only spatial layout is specified in
+[`design-2-textures.md`](design-2-textures.md).
 
 ## Tangent frame
 
@@ -965,11 +967,11 @@ The in-code card description becomes:
 
 ```js
 const card_description = {
-    artwork: "card_texture.png",
-    foil: {
-        kind: "physical_linear",
-        control: "foil_control_v2.png?version=constant-spacing-1",
+    front: {
+        artwork: "card_front.png",
+        foil_control: "card_front_foil.png",
     },
+    shell_color_srgb: [0.5, 0.5, 0.5],
 };
 
 const OUTPUT_CALIBRATION = Object.freeze({

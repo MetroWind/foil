@@ -1,63 +1,313 @@
-/* http://meyerweb.com/eric/tools/css/reset/
-   v2.0 | 20110126
-   License: none (public domain)
-*/
-
-html, body, div, span, applet, object, iframe,
-h1, h2, h3, h4, h5, h6, p, blockquote, pre,
-a, abbr, acronym, address, big, cite, code,
-del, dfn, em, img, ins, kbd, q, s, samp,
-small, strike, strong, sub, sup, tt, var,
-b, u, i, center,
-dl, dt, dd, ol, ul, li,
-fieldset, form, label, legend,
-table, caption, tbody, tfoot, thead, tr, th, td,
-article, aside, canvas, details, embed,
-figure, figcaption, footer, header, hgroup,
-menu, nav, output, ruby, section, summary,
-time, mark, audio, video {
-	margin: 0;
-	padding: 0;
-	border: 0;
-	font-size: 100%;
-	font: inherit;
-	vertical-align: baseline;
-}
-/* HTML5 display-role reset for older browsers */
-article, aside, details, figcaption, figure,
-footer, header, hgroup, menu, nav, section {
-	display: block;
-}
-body {
-	line-height: 1;
-}
-ol, ul {
-	list-style: none;
-}
-blockquote, q {
-	quotes: none;
-}
-blockquote:before, blockquote:after,
-q:before, q:after {
-	content: '';
-	content: none;
-}
-table {
-	border-collapse: collapse;
-	border-spacing: 0;
+:root
+{
+    color-scheme: dark;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+                 BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-synthesis: none;
 }
 
-/* ========== Actual styles ======================================> */
+*
+{
+    box-sizing: border-box;
+}
+
+html,
+body
+{
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+button,
+input
+{
+    font: inherit;
+}
+
+button
+{
+    border: 0;
+}
 
 #Body
 {
+    position: relative;
     width: 100vw;
     height: 100vh;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 62% 42%, #29303b 0, #11151b 45%,
+                        #090b0f 100%);
 }
 
 #GLCanvas
 {
+    display: block;
     width: 100%;
     height: 100%;
-    display: block;
+    cursor: move;
+}
+
+#UploadPanel
+{
+    position: absolute;
+    top: clamp(1rem, 3vw, 2.5rem);
+    left: clamp(1rem, 3vw, 2.5rem);
+    width: min(23rem, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    padding: 1.35rem;
+    overflow-y: auto;
+    color: #f6f7f9;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 1rem;
+    background: rgb(12 15 20 / 88%);
+    box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 35%);
+    backdrop-filter: blur(1rem);
+}
+
+.panel_header
+{
+    margin-bottom: 1.15rem;
+}
+
+.eyebrow
+{
+    margin: 0 0 0.4rem;
+    color: #aeb9c8;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+}
+
+h1
+{
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(1.8rem, 4vw, 2.35rem);
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -0.035em;
+}
+
+.introduction
+{
+    margin: 0.75rem 0 0;
+    color: #bdc5d0;
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+#CardUploadForm
+{
+    display: grid;
+    gap: 0.8rem;
+}
+
+.file_field
+{
+    display: grid;
+    gap: 0.42rem;
+    min-width: 0;
+    padding: 0.75rem;
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 0.7rem;
+    background: rgb(255 255 255 / 4%);
+}
+
+.field_label
+{
+    font-size: 0.78rem;
+    font-weight: 650;
+}
+
+input[type="file"]
+{
+    width: 100%;
+    color: #b7c0cc;
+    font-size: 0.72rem;
+}
+
+input[type="file"]::file-selector-button
+{
+    margin-right: 0.6rem;
+    padding: 0.42rem 0.62rem;
+    color: #edf1f5;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 0.45rem;
+    background: #29313c;
+    cursor: pointer;
+}
+
+input[type="file"]:focus-visible
+{
+    outline: 2px solid #80bfff;
+    outline-offset: 0.35rem;
+}
+
+.file_meta
+{
+    overflow: hidden;
+    color: #8994a3;
+    font-size: 0.68rem;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.control_hint,
+.session_note
+{
+    margin: 0;
+    color: #8994a3;
+    font-size: 0.68rem;
+    line-height: 1.45;
+}
+
+.form_actions
+{
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.55rem;
+}
+
+.form_actions button
+{
+    min-height: 2.4rem;
+    padding: 0.55rem 0.85rem;
+    color: #10151b;
+    border-radius: 0.55rem;
+    background: #f4f7fa;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.form_actions .secondary_button
+{
+    color: #d6dce4;
+    border: 1px solid rgb(255 255 255 / 12%);
+    background: transparent;
+}
+
+.form_actions button:hover:not(:disabled)
+{
+    filter: brightness(0.9);
+}
+
+.form_actions button:focus-visible
+{
+    outline: 2px solid #80bfff;
+    outline-offset: 2px;
+}
+
+.form_actions button:disabled,
+input:disabled
+{
+    cursor: wait;
+    opacity: 0.45;
+}
+
+.upload_status
+{
+    min-height: 1.1rem;
+    margin: 0;
+    color: #aeb7c3;
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+
+.upload_status[data-kind="success"]
+{
+    color: #83d5a4;
+}
+
+.upload_status[data-kind="error"]
+{
+    color: #ff9a9a;
+}
+
+.upload_status[data-kind="progress"]
+{
+    color: #8dc5ff;
+}
+
+.session_note
+{
+    margin-top: 1rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid rgb(255 255 255 / 8%);
+}
+
+#DragHint
+{
+    position: absolute;
+    right: clamp(1rem, 3vw, 2.5rem);
+    bottom: clamp(1rem, 3vw, 2rem);
+    margin: 0;
+    padding: 0.55rem 0.75rem;
+    color: #a7b0bd;
+    border: 1px solid rgb(255 255 255 / 9%);
+    border-radius: 999px;
+    background: rgb(12 15 20 / 65%);
+    font-size: 0.68rem;
+    backdrop-filter: blur(0.6rem);
+    pointer-events: none;
+}
+
+@media(max-width: 42rem)
+{
+    #UploadPanel
+    {
+        top: 0.75rem;
+        left: 0.75rem;
+        width: calc(100vw - 1.5rem);
+        max-height: calc(100vh - 1.5rem);
+        padding: 1rem;
+    }
+
+    .introduction,
+    .session_note
+    {
+        display: none;
+    }
+
+    .panel_header
+    {
+        margin-bottom: 0.8rem;
+    }
+
+    #CardUploadForm
+    {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .control_hint,
+    .form_actions,
+    .upload_status
+    {
+        grid-column: 1 / -1;
+    }
+
+    #DragHint
+    {
+        display: none;
+    }
+}
+
+@media(max-width: 30rem)
+{
+    #CardUploadForm
+    {
+        grid-template-columns: 1fr;
+    }
+
+    .control_hint,
+    .form_actions,
+    .upload_status
+    {
+        grid-column: auto;
+    }
 }

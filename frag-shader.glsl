@@ -55,6 +55,8 @@ const float GAMUT_TARGET_FRACTION = 0.85;
 const float LEVELS_BLACK_POINT_VALUE = float(LEVELS_BLACK_POINT);
 const float LEVELS_WHITE_POINT_VALUE = float(LEVELS_WHITE_POINT);
 const float LEVELS_MIDTONE_VALUE = float(LEVELS_MIDTONE);
+const int MATERIAL_PHYSICAL_FOIL = 0;
+const int MATERIAL_SOLID_COLOR = 1;
 #if LIGHT_SAMPLE_COUNT == 2
 const vec2 LIGHT_SAMPLES[LIGHT_SAMPLE_COUNT] = vec2[](
     vec2(-0.5, -0.5),
@@ -112,6 +114,8 @@ in vec3 v_view_bitangent;
 uniform sampler2D u_artwork;
 uniform sampler2D u_foil_control;
 uniform sampler2D u_spectral_xyz;
+uniform int u_material_kind;
+uniform vec3 u_solid_color_srgb;
 uniform vec3 u_light_position;
 uniform vec3 u_light_normal;
 uniform vec3 u_light_axis_x;
@@ -128,6 +132,17 @@ struct FoilControl
     float disorder;
     float coverage;
 };
+
+// Construct finite controls that select only the ordinary printed layer.
+FoilControl noFoilControl()
+{
+    FoilControl control;
+    control.groove_spacing_um = GROOVE_SPACING_MIN_UM;
+    control.grating_axis = vec2(1.0, 0.0);
+    control.disorder = 0.0;
+    control.coverage = 0.0;
+    return control;
+}
 
 // Decode display-referred artwork into the linear-light working space.
 vec3 srgbToLinear(vec3 encoded)
@@ -649,9 +664,27 @@ vec3 integrateDiskLight(FoilControl control, vec3 albedo,
 
 void main()
 {
-    vec4 artwork_sample = texture(u_artwork, v_texcoord);
+    vec4 artwork_sample;
+    FoilControl control;
+    if(u_material_kind == MATERIAL_SOLID_COLOR)
+    {
+        // The shell deliberately owns no texture. A uniform branch keeps its
+        // draw from sampling any of the front-only material resources.
+        artwork_sample = vec4(u_solid_color_srgb, 1.0);
+        control = noFoilControl();
+    }
+    else if(u_material_kind == MATERIAL_PHYSICAL_FOIL)
+    {
+        artwork_sample = texture(u_artwork, v_texcoord);
+        control = sampleFoilControl(v_texcoord);
+    }
+    else
+    {
+        // Unknown modes are programming errors; magenta makes them obvious.
+        artwork_sample = vec4(1.0, 0.0, 1.0, 1.0);
+        control = noFoilControl();
+    }
     vec3 albedo = srgbToLinear(artwork_sample.rgb);
-    FoilControl control = sampleFoilControl(v_texcoord);
     vec3 view_direction = safeNormalize(
         -v_view_position, vec3(0.0, 0.0, 1.0));
     vec3 normal = safeNormalize(v_view_normal, vec3(0.0, 0.0, 1.0));

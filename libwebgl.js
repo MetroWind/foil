@@ -196,6 +196,26 @@ const TEXTURE_ROLE = Object.freeze({
     DATA: "data",
 });
 
+/** Return decode transforms for an uploaded browser image. */
+function bitmapDecodeOptions(flip_y, role)
+{
+    return {
+        imageOrientation: flip_y ? "flipY" : "none",
+        premultiplyAlpha: "none",
+        colorSpaceConversion:
+            role == TEXTURE_ROLE.DATA ? "none" : "default",
+    };
+}
+
+/** Shader material modes shared by every declarative material. */
+const MATERIAL_KIND = Object.freeze({
+    PHYSICAL_FOIL: 0,
+    SOLID_COLOR: 1,
+});
+
+/** Maximum decoded pixels accepted for one browser image texture. */
+const MAX_CARD_TEXTURE_PIXELS = 24 * 1024 * 1024;
+
 /** Own one asynchronously loaded image texture. */
 class Texture
 {
@@ -225,6 +245,13 @@ class Texture
         this.role = role;
         this.url = url;
         this.gl = gl;
+        this.disposed = false;
+        this.ready = new Promise(function storeTextureCompletion(
+            resolve, reject)
+        {
+            this.resolve_load = resolve;
+            this.reject_load = reject;
+        }.bind(this));
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -236,57 +263,139 @@ class Texture
                       gl.UNSIGNED_BYTE,
                       new Uint8Array(placeholder_color));
 
-        this.image = new Image();
-        this.image.addEventListener("load", this.handleLoad.bind(this));
-        this.image.addEventListener("error", this.handleError.bind(this));
-        this.image.src = url;
+        this.image = null;
+        if(url != null)
+        {
+            this.image = new Image();
+            this.image.addEventListener("load", this.handleLoad.bind(this));
+            this.image.addEventListener("error", this.handleError.bind(this));
+            this.image.src = url;
+        }
     }
 
-    /** Upload a successfully loaded image while preserving unpack state. */
-    handleLoad(event)
+    /** Decode and upload one ephemeral browser file without creating a URL. */
+    static async fromFile(gl, file, options = {})
+    {
+        // WebGL ignores UNPACK_FLIP_Y_WEBGL for ImageBitmap sources. Apply
+        // the requested orientation while creating the bitmap, then prevent
+        // Texture.upload() from attempting the same transformation again.
+        const upload_options = Object.assign({}, options, {flip_y: false});
+        const texture = new Texture(gl, null, upload_options);
+        let bitmap = null;
+        try
+        {
+            bitmap = await createImageBitmap(
+                file, bitmapDecodeOptions(options.flip_y, options.role));
+            texture.upload(bitmap, bitmap.width, bitmap.height);
+            return texture;
+        }
+        catch(error)
+        {
+            const wrapped_error = new Error(
+                `Failed to process ${file.name}: ${error.message}`);
+            texture.fail(wrapped_error);
+            texture.ready.catch(function consumeFailedUpload() {});
+            texture.dispose();
+            throw(wrapped_error);
+        }
+        finally
+        {
+            if(bitmap != null)
+            {
+                bitmap.close();
+            }
+        }
+    }
+
+    /** Upload one decoded source while preserving global pixel-unpack state. */
+    upload(source, width, height)
     {
         const gl = this.gl;
+        const max_texture_size = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+        if(!Number.isInteger(width) || !Number.isInteger(height)
+           || width <= 0 || height <= 0
+           || width > max_texture_size || height > max_texture_size
+           || width * height > MAX_CARD_TEXTURE_PIXELS)
+        {
+            throw(new Error(
+                `Texture ${this.url || "upload"} has invalid dimensions `
+                + `${width}x`
+                + `${height}; maximum dimension is ${max_texture_size} and `
+                + `maximum area is ${MAX_CARD_TEXTURE_PIXELS} pixels.`));
+        }
         const previous_flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
         const previous_premultiply = gl.getParameter(
             gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL);
         const previous_color_space = gl.getParameter(
             gl.UNPACK_COLORSPACE_CONVERSION_WEBGL);
+        const previous_active_texture = gl.getParameter(gl.ACTIVE_TEXTURE);
+        gl.activeTexture(gl.TEXTURE0);
+        const previous_texture = gl.getParameter(gl.TEXTURE_BINDING_2D);
 
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, this.flip_y);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-        if(this.role == TEXTURE_ROLE.DATA)
+        try
         {
-            gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+            gl.bindTexture(gl.TEXTURE_2D, this.texture);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, this.flip_y);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            if(this.role == TEXTURE_ROLE.DATA)
+            {
+                gl.pixelStorei(
+                    gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+            }
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA,
+                          gl.UNSIGNED_BYTE, source);
+
+            if(this.role == TEXTURE_ROLE.COLOR)
+            {
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
+                                 gl.LINEAR_MIPMAP_LINEAR);
+                gl.generateMipmap(gl.TEXTURE_2D);
+            }
         }
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA,
-                      gl.UNSIGNED_BYTE, event.target);
-
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, previous_flip);
-        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
-                       previous_premultiply);
-        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,
-                       previous_color_space);
-
-        if(this.role == TEXTURE_ROLE.COLOR)
+        finally
         {
-            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER,
-                             gl.LINEAR_MIPMAP_LINEAR);
-            gl.generateMipmap(gl.TEXTURE_2D);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, previous_flip);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,
+                           previous_premultiply);
+            gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL,
+                           previous_color_space);
+            gl.bindTexture(gl.TEXTURE_2D, previous_texture);
+            gl.activeTexture(previous_active_texture);
         }
 
-        this.width = event.target.naturalWidth;
-        this.height = event.target.naturalHeight;
+        this.width = width;
+        this.height = height;
+        this.resolve_load(this);
         for(const listener of this.load_listeners)
         {
             listener(this);
         }
     }
 
+    /** Upload a successfully loaded URL image or reject its ready promise. */
+    handleLoad(event)
+    {
+        try
+        {
+            this.upload(event.target, event.target.naturalWidth,
+                        event.target.naturalHeight);
+        }
+        catch(error)
+        {
+            this.fail(error);
+        }
+    }
+
     /** Report an image-load failure with its complete URL. */
     handleError()
     {
-        throw(new Error(`Failed to load texture: ${this.url}`));
+        this.fail(new Error(`Failed to load texture: ${this.url}`));
+    }
+
+    /** Reject this texture's completion promise with one load error. */
+    fail(error)
+    {
+        this.reject_load(error);
     }
 
     /** Run a callback after this texture has loaded. */
@@ -305,6 +414,17 @@ class Texture
         this.gl.activeTexture(this.gl.TEXTURE0 + unit);
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
         this.gl.uniform1i(program.uniform(uniform_name), unit);
+    }
+
+    /** Release this texture's GPU allocation exactly once. */
+    dispose()
+    {
+        if(!this.disposed)
+        {
+            this.gl.deleteTexture(this.texture);
+            this.disposed = true;
+        }
+        this.image = null;
     }
 }
 
@@ -402,49 +522,132 @@ class SpectralLut
         this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
         this.gl.uniform1i(program.uniform("u_spectral_xyz"), texture_unit);
     }
+
+    /** Release the lookup texture and any pending resource request. */
+    dispose()
+    {
+        if(this.request != null && !this.loaded && !this.failed)
+        {
+            this.request.abort();
+        }
+        this.gl.deleteTexture(this.texture);
+        this.request = null;
+    }
 }
 
 /** Own artwork, physical foil controls, and the spectral lookup. */
 class PhysicalFoilMaterial
 {
-    /** Load every resource required by a physical foil card. */
-    constructor(gl, artwork_url, control_url, spectral_url)
+    /** Load or adopt every resource required by a physical foil card. */
+    constructor(gl, artwork, foil_control, spectral_lut)
     {
-        this.artwork = new Texture(gl, artwork_url, {flip_y: true});
-        this.foil_control = new Texture(gl, control_url, {
-            flip_y: true,
-            role: TEXTURE_ROLE.DATA,
-        });
-        this.spectral_lut = new SpectralLut(gl, spectral_url);
+        this.artwork = artwork instanceof Texture
+            ? artwork
+            : new Texture(gl, artwork, {flip_y: true});
+        this.foil_control = foil_control instanceof Texture
+            ? foil_control
+            : new Texture(gl, foil_control, {
+                flip_y: true,
+                role: TEXTURE_ROLE.DATA,
+            });
+        this.owns_spectral_lut = !(spectral_lut instanceof SpectralLut);
+        this.spectral_lut = this.owns_spectral_lut
+            ? new SpectralLut(gl, spectral_lut)
+            : spectral_lut;
         this.gl = gl;
+        this.ready = Promise.all([
+            this.artwork.ready,
+            this.foil_control.ready,
+        ]).then(function finishLoadedMaterial()
+        {
+            return this;
+        }.bind(this));
+    }
 
-        this.artwork.onLoad(this.checkDimensions.bind(this));
-        this.foil_control.onLoad(this.checkDimensions.bind(this));
+    /** Create a material from temporary browser files and a shared LUT. */
+    static async fromFiles(gl, artwork_file, control_file, spectral_lut)
+    {
+        let artwork = null;
+        let foil_control = null;
+        try
+        {
+            artwork = await Texture.fromFile(gl, artwork_file, {
+                flip_y: true,
+            });
+            foil_control = await Texture.fromFile(gl, control_file, {
+                flip_y: true,
+                role: TEXTURE_ROLE.DATA,
+            });
+            const material = new PhysicalFoilMaterial(
+                gl, artwork, foil_control, spectral_lut);
+            await material.ready;
+            return material;
+        }
+        catch(error)
+        {
+            if(artwork != null)
+            {
+                artwork.dispose();
+            }
+            if(foil_control != null)
+            {
+                foil_control.dispose();
+            }
+            throw(error);
+        }
     }
 
     /** Bind all physical card material resources. */
     use(program)
     {
+        this.gl.uniform1i(
+            program.uniform("u_material_kind"), MATERIAL_KIND.PHYSICAL_FOIL);
         this.artwork.use(program, "u_artwork", 0);
         this.foil_control.use(program, "u_foil_control", 1);
         this.spectral_lut.use(program, 2);
     }
 
-    /** Require artwork and control fields to use the same pixel grid. */
-    checkDimensions()
+    /** Release owned artwork, controls, and any unshared spectral table. */
+    dispose()
     {
-        if(this.artwork.width == 0 || this.foil_control.width == 0)
+        this.artwork.dispose();
+        this.foil_control.dispose();
+        if(this.owns_spectral_lut)
         {
-            return;
+            this.spectral_lut.dispose();
         }
-        if(this.artwork.width != this.foil_control.width ||
-           this.artwork.height != this.foil_control.height)
+    }
+}
+
+/** Shade geometry with one opaque, non-foil sRGB color. */
+class SolidColorMaterial
+{
+    /** Create a validated solid-color material. */
+    constructor(gl, color_srgb)
+    {
+        const is_valid = Array.isArray(color_srgb)
+            && color_srgb.length == 3
+            && Number.isFinite(color_srgb[0])
+            && Number.isFinite(color_srgb[1])
+            && Number.isFinite(color_srgb[2])
+            && color_srgb[0] >= 0.0 && color_srgb[0] <= 1.0
+            && color_srgb[1] >= 0.0 && color_srgb[1] <= 1.0
+            && color_srgb[2] >= 0.0 && color_srgb[2] <= 1.0;
+        if(!is_valid)
         {
-            throw(new Error(
-                "Artwork and physical foil control dimensions differ: "
-                + `${this.artwork.width}x${this.artwork.height} and `
-                + `${this.foil_control.width}x${this.foil_control.height}`));
+            throw(new Error("Invalid solid material color."));
         }
+        this.color_srgb = color_srgb.slice();
+        this.gl = gl;
+    }
+
+    /** Select solid shading and upload the encoded sRGB color. */
+    use(program)
+    {
+        this.gl.uniform1i(
+            program.uniform("u_material_kind"), MATERIAL_KIND.SOLID_COLOR);
+        this.gl.uniform3fv(
+            program.uniform("u_solid_color_srgb"), this.color_srgb);
     }
 }
 
@@ -726,7 +929,14 @@ if(typeof module != "undefined")
 {
     module.exports = {
         DiskLight,
+        MAX_CARD_TEXTURE_PIXELS,
+        MATERIAL_KIND,
+        PhysicalFoilMaterial,
         ShaderProgram,
+        SolidColorMaterial,
+        TEXTURE_ROLE,
+        Texture,
+        bitmapDecodeOptions,
         calculateTangentFrames,
         defineShaderConstants,
     };
