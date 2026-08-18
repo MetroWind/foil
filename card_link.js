@@ -46,8 +46,29 @@ function optionalCardLinkParameter(parameters, name)
     return values[0];
 }
 
-/** Encode remote artwork and optional controls into a versioned fragment. */
-function encodeCardLink(page_url, artwork_url, control_url)
+/** Validate one serialized uniform RGBA control and return its bytes. */
+function parseUniformControl(value)
+{
+    const parts = String(value).split(",");
+    const channels = parts.map(function parseChannel(channel)
+    {
+        return Number(channel);
+    });
+    if(parts.length != 4
+       || !parts.every(function validateChannel(part, index)
+       {
+           return /^(0|[1-9][0-9]{0,2})$/.test(part)
+               && channels[index] <= 255;
+       }))
+    {
+        throw(new Error(
+            "Uniform RGBA control must contain four comma-separated bytes."));
+    }
+    return channels;
+}
+
+/** Encode remote images or uniform controls into a versioned fragment. */
+function encodeCardLink(page_url, artwork_url, control_url, control_color)
 {
     const parameters = new URLSearchParams();
     parameters.set("v", CARD_LINK_VERSION);
@@ -57,6 +78,12 @@ function encodeCardLink(page_url, artwork_url, control_url)
     {
         parameters.set(
             "controls", validateRemoteImageUrl(control_url, "Control URL"));
+    }
+    else
+    {
+        parameters.set("rgba", parseUniformControl(
+            Array.isArray(control_color)
+                ? control_color.join(",") : "").join(","));
     }
 
     const url = new URL(page_url);
@@ -74,7 +101,7 @@ function parseCardLink(page_url)
     }
 
     const parameters = new URLSearchParams(url.hash.slice(1));
-    const card_names = ["v", "artwork", "controls"];
+    const card_names = ["v", "artwork", "controls", "rgba"];
     if(!card_names.some(function hasCardParameter(name)
     {
         return parameters.has(name);
@@ -90,11 +117,20 @@ function parseCardLink(page_url)
     }
     const artwork_url = requireCardLinkParameter(parameters, "artwork");
     const control_url = optionalCardLinkParameter(parameters, "controls");
+    const uniform_value = optionalCardLinkParameter(parameters, "rgba");
+    if(control_url != null && uniform_value != null)
+    {
+        throw(new Error(
+            "Card link cannot specify both an image and uniform controls."));
+    }
     return {
         artwork_url: validateRemoteImageUrl(artwork_url, "Artwork URL"),
         control_url: control_url == null
             ? null
             : validateRemoteImageUrl(control_url, "Control URL"),
+        control_color: uniform_value == null
+            ? null
+            : parseUniformControl(uniform_value),
     };
 }
 
@@ -113,6 +149,7 @@ if(typeof module != "undefined")
         clearCardLink,
         encodeCardLink,
         parseCardLink,
+        parseUniformControl,
         validateRemoteImageUrl,
     };
 }

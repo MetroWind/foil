@@ -10,6 +10,8 @@ const TRANSMITTED_PRINT_ENERGY = 0.60;
 const ABSORBED_ENERGY = 0.08;
 const ORDER_DECAY = 3.00;
 const SPECTRAL_SAMPLE_COUNT = 401;
+const MAX_GRATING_TILT_RADIANS = Math.PI / 12.0;
+const FOIL_DISORDER = 1.0;
 
 /** Decode one sRGB component into linear light. */
 function srgbToLinear(value)
@@ -206,6 +208,29 @@ function interpolateGratingAxis(encoded_values, weights)
 
     const angle = 0.5 * Math.atan2(axis_y / length, axis_x / length);
     return [Math.cos(angle), Math.sin(angle)];
+}
+
+/** Decode normalized blue into signed local grating tilt in radians. */
+function decodeGratingTilt(encoded_tilt)
+{
+    return MAX_GRATING_TILT_RADIANS * (2.0 * encoded_tilt - 1.0);
+}
+
+/** Rotate a microscopic normal and grating axis around the groove axis. */
+function tiltGratingFrame(normal, grating_axis, tilt)
+{
+    const cosine = Math.cos(tilt);
+    const sine = Math.sin(tilt);
+    return {
+        normal: normal.map(function tiltNormal(value, index)
+        {
+            return cosine * value - sine * grating_axis[index];
+        }),
+        grating: grating_axis.map(function tiltGrating(value, index)
+        {
+            return cosine * value + sine * normal[index];
+        }),
+    };
 }
 
 /** Calculate the wavelength selected by one diffraction-order magnitude. */
@@ -406,8 +431,10 @@ if(typeof module != "undefined")
 {
     module.exports = {
         ABSORBED_ENERGY,
+        FOIL_DISORDER,
         GROOVE_SPACING_MAX_UM,
         GROOVE_SPACING_MIN_UM,
+        MAX_GRATING_TILT_RADIANS,
         TOTAL_DIFFRACTION_ENERGY,
         TRANSMITTED_PRINT_ENERGY,
         VISIBLE_WAVELENGTH_MAX_UM,
@@ -417,6 +444,7 @@ if(typeof module != "undefined")
         crossGrooveGaussian,
         decodeCrossGrooveWidth,
         decodeGratingAxis,
+        decodeGratingTilt,
         decodeGrooveSpacing,
         decodePeriodSpread,
         diffractionWavelengthWidth,
@@ -437,6 +465,7 @@ if(typeof module != "undefined")
         srgbToLinear,
         perceptualGamutMap,
         tangentProjection,
+        tiltGratingFrame,
         visibilitySmithGgx,
         combineWidths,
         xyzToLinearSrgb,

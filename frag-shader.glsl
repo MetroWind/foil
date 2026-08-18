@@ -29,6 +29,8 @@ precision highp float;
 
 const float PI = 3.14159265359;
 const float BRDF_EPSILON = 0.00001;
+const float MAX_GRATING_TILT_RADIANS = PI / 12.0;
+const float FOIL_DISORDER = 1.0;
 const float GROOVE_SPACING_MIN_UM = 0.55;
 const float GROOVE_SPACING_MAX_UM = 3.20;
 const float VISIBLE_WAVELENGTH_MIN_UM = 0.380;
@@ -52,6 +54,7 @@ const float AMBIENT_PRINT_IRRADIANCE = 0.08;
 const float EXPOSURE = 1.0;
 const float GAMUT_KNEE_FRACTION = 0.55;
 const float GAMUT_TARGET_FRACTION = 0.85;
+const float ARTISTIC_COVERAGE_EXPONENT = 2.2;
 const float LEVELS_BLACK_POINT_VALUE = float(LEVELS_BLACK_POINT);
 const float LEVELS_WHITE_POINT_VALUE = float(LEVELS_WHITE_POINT);
 const float LEVELS_MIDTONE_VALUE = float(LEVELS_MIDTONE);
@@ -129,7 +132,7 @@ struct FoilControl
 {
     float groove_spacing_um;
     vec2 grating_axis;
-    float disorder;
+    float grating_tilt;
     float coverage;
 };
 
@@ -139,7 +142,7 @@ FoilControl noFoilControl()
     FoilControl control;
     control.groove_spacing_um = GROOVE_SPACING_MIN_UM;
     control.grating_axis = vec2(1.0, 0.0);
-    control.disorder = 0.0;
+    control.grating_tilt = 0.0;
     control.coverage = 0.0;
     return control;
 }
@@ -307,6 +310,20 @@ vec3 perceptualGamutMap(vec3 linear_rgb)
         vec3(lab.x, hue * mapped_chroma)), 0.0, 1.0);
 }
 
+// Introduce spectral gamut compression continuously with foil coverage. The
+// early return avoids the expensive OKLab search for ordinary card regions,
+// while mix() makes its limiting value equal the non-foil rendering.
+vec3 applyFoilGamutMap(vec3 linear_rgb, float coverage)
+{
+    vec3 ordinary_rgb = clamp(linear_rgb, 0.0, 1.0);
+    if(coverage <= 0.0)
+    {
+        return ordinary_rgb;
+    }
+    vec3 mapped_rgb = perceptualGamutMap(linear_rgb);
+    return mix(ordinary_rgb, mapped_rgb, clamp(coverage, 0.0, 1.0));
+}
+
 // Normalize a vector without allowing a zero-length interpolation to produce
 // NaNs. Callers choose a fallback appropriate to their geometric role.
 vec3 safeNormalize(vec3 value, vec3 fallback)
@@ -345,6 +362,30 @@ vec2 doubledOrientation(float encoded_orientation)
     return vec2(cos(doubled_angle), sin(doubled_angle));
 }
 
+// A physical area-coverage field would mix the ordinary and foil BRDFs
+// linearly, making reflected energy proportional to the stored alpha. Tone
+// mapping and sRGB encoding make small linear foil energies look much stronger
+// than artists expect. For a representative full-coverage linear foil peak of
+// 0.84, the unmodified display pipeline produces approximately:
+//
+//     Coverage    Linear foil    sRGB display value
+//     1.00        0.840          0.78
+//     0.10        0.084          0.32
+//     0.01        0.0084         0.09
+//
+// Ten percent of the physical foil energy can therefore still appear about
+// forty percent as bright numerically. Treat alpha as an artistic control and
+// apply a display-inspired response curve so partial values fade faster. This
+// deliberately breaks energy conservation with respect to the authored
+// coverage value: the stored alpha is no longer a literal physical area
+// fraction. The endpoint BRDFs remain energy bounded because the effective
+// coverage still lies in [0, 1].
+float decodeArtisticCoverage(float encoded_coverage)
+{
+    return pow(clamp(encoded_coverage, 0.0, 1.0),
+               ARTISTIC_COVERAGE_EXPONENT);
+}
+
 // Decode the version-2 packed control texture with orientation-safe filtering.
 FoilControl sampleFoilControl(vec2 texture_coord)
 {
@@ -369,7 +410,7 @@ FoilControl sampleFoilControl(vec2 texture_coord)
 
     float encoded_spacing = bilinear(
         value_00.r, value_10.r, value_01.r, value_11.r, weight);
-    float disorder = bilinear(
+    float encoded_tilt = bilinear(
         value_00.b, value_10.b, value_01.b, value_11.b, weight);
     float coverage = bilinear(
         value_00.a, value_10.a, value_01.a, value_11.a, weight);
@@ -391,8 +432,9 @@ FoilControl sampleFoilControl(vec2 texture_coord)
         GROOVE_SPACING_MIN_UM / GROOVE_SPACING_MAX_UM,
         encoded_spacing);
     control.grating_axis = vec2(cos(grating_angle), sin(grating_angle));
-    control.disorder = clamp(disorder, 0.0, 1.0);
-    control.coverage = clamp(coverage, 0.0, 1.0);
+    control.grating_tilt = MAX_GRATING_TILT_RADIANS
+                         * (2.0 * clamp(encoded_tilt, 0.0, 1.0) - 1.0);
+    control.coverage = decodeArtisticCoverage(coverage);
     return control;
 }
 
@@ -463,12 +505,11 @@ vec3 evaluateSpecularBrdf(vec3 light_direction, vec3 view_direction,
          * fresnelSchlick(view_half);
 }
 
-// Evaluate the normalized cross-groove density from packed disorder.
-float crossGrooveLobe(float cross_coordinate, float disorder,
-                      float source_sigma)
+// Evaluate the normalized cross-groove density at the fixed maximum disorder.
+float crossGrooveLobe(float cross_coordinate, float source_sigma)
 {
-    float disorder_squared = disorder * disorder;
-    float material_width = mix(0.008, 0.16, disorder_squared);
+    float material_width = mix(
+        0.008, 0.16, FOIL_DISORDER * FOIL_DISORDER);
     float width = sqrt(material_width * material_width
                      + source_sigma * source_sigma);
     float normalized = cross_coordinate / width;
@@ -476,14 +517,14 @@ float crossGrooveLobe(float cross_coordinate, float disorder,
          / (sqrt(2.0 * PI) * width);
 }
 
-// Approximate period-disorder convolution with three spectral taps.
-vec3 sampleDisorderedSpectrum(float wavelength_um, float disorder,
-                              float source_width_um)
+// Convolve the spectrum with the fixed maximum period disorder.
+vec3 sampleDisorderedSpectrum(float wavelength_um, float source_width_um)
 {
 #if SPECTRAL_TAP_COUNT == 1
     return sampleSpectralXyz(wavelength_um);
 #elif SPECTRAL_TAP_COUNT == 3
-    float relative_spread = mix(0.003, 0.08, disorder * disorder);
+    float relative_spread = mix(
+        0.003, 0.08, FOIL_DISORDER * FOIL_DISORDER);
     float material_width_um = wavelength_um * relative_spread;
     float wavelength_width = sqrt(
         material_width_um * material_width_um
@@ -494,7 +535,8 @@ vec3 sampleDisorderedSpectrum(float wavelength_um, float disorder,
 #elif SPECTRAL_TAP_COUNT == 9
     // A normalized binomial kernel approximates a Gaussian without allowing
     // a broad source to degenerate into three isolated spectral primaries.
-    float relative_spread = mix(0.003, 0.08, disorder * disorder);
+    float relative_spread = mix(
+        0.003, 0.08, FOIL_DISORDER * FOIL_DISORDER);
     float material_width_um = wavelength_um * relative_spread;
     float wavelength_width = sqrt(
         material_width_um * material_width_um
@@ -542,13 +584,19 @@ vec3 evaluateDiffractionXyz(FoilControl control,
                  + control.grating_axis.y * bitangent;
     vec3 groove = -control.grating_axis.y * tangent
                 + control.grating_axis.x * bitangent;
+    // Tilt only the microscopic grating frame around the groove axis. The
+    // macroscopic card normal still controls print lighting and visibility.
+    float tilt_cosine = cos(control.grating_tilt);
+    float tilt_sine = sin(control.grating_tilt);
+    vec3 tilted_grating = tilt_cosine * grating + tilt_sine * normal;
+    vec3 tilted_normal = tilt_cosine * normal - tilt_sine * grating;
     vec3 direction_sum = light_direction + view_direction;
     vec3 tangent_sum = direction_sum
-                     - normal * dot(direction_sum, normal);
-    float order_coordinate = abs(dot(tangent_sum, grating));
+                     - tilted_normal * dot(direction_sum, tilted_normal);
+    float order_coordinate = abs(dot(tangent_sum, tilted_grating));
     float cross_coordinate = dot(tangent_sum, groove);
     float cross_response = crossGrooveLobe(
-        cross_coordinate, control.disorder, source_sigma);
+        cross_coordinate, source_sigma);
     vec3 diffraction_xyz = vec3(0.0);
 
     for(int order_index = 0; order_index < ORDER_COUNT; ++order_index)
@@ -565,7 +613,7 @@ vec3 evaluateDiffractionXyz(FoilControl control,
         float source_width_um = control.groove_spacing_um
                               * source_sigma / order;
         vec3 spectral_xyz = sampleDisorderedSpectrum(
-            wavelength_um, control.disorder, source_width_um);
+            wavelength_um, source_width_um);
         float jacobian = SPECTRAL_JACOBIAN_SCALE
                        * control.groove_spacing_um / order;
         diffraction_xyz += orderEfficiency(order_index)
@@ -708,11 +756,8 @@ void main()
     hdr_color += AMBIENT_PRINT_IRRADIANCE * ambient_energy * albedo;
 
     vec3 tone_mapped = toneMap(hdr_color);
-    // The expensive perceptual search is needed only where spectral foil is
-    // present. Ordinary decoded artwork under neutral light remains in sRGB.
-    vec3 display_linear = control.coverage > 0.0
-                        ? perceptualGamutMap(tone_mapped)
-                        : clamp(tone_mapped, 0.0, 1.0);
+    vec3 display_linear = applyFoilGamutMap(
+        tone_mapped, control.coverage);
     vec3 encoded_color = linearToSrgb(display_linear);
     out_color = vec4(applyLevels(encoded_color),
                      artwork_sample.a);

@@ -90,6 +90,30 @@ function testControls()
         [1.0 / 255.0, 254.0 / 255.0], [0.5, 0.5]);
     assert.ok(Math.abs(seam_axis[0]) > 0.999);
     assert.ok(Math.abs(seam_axis[1]) < 0.01);
+    assertNear(foil_math.decodeGratingTilt(0.0), -Math.PI / 12.0);
+    assertNear(foil_math.decodeGratingTilt(0.5), 0.0);
+    assertNear(foil_math.decodeGratingTilt(1.0), Math.PI / 12.0);
+
+    const tilted = foil_math.tiltGratingFrame(
+        [0.0, 0.0, 1.0], [1.0, 0.0, 0.0],
+        foil_math.decodeGratingTilt(1.0));
+    assertNear(Math.hypot(...tilted.normal), 1.0);
+    assertNear(Math.hypot(...tilted.grating), 1.0);
+    assertNear(tilted.normal.reduce(function dotTiltedFrame(
+        sum, value, index)
+    {
+        return sum + value * tilted.grating[index];
+    }, 0.0), 0.0);
+
+    const light = [0.0, 0.0, 1.0];
+    const view = [0.5, 0.0, Math.sqrt(0.75)];
+    const ordinary_projection = foil_math.tangentProjection(
+        light, view, [0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    const tilted_projection = foil_math.tangentProjection(
+        light, view, tilted.normal, tilted.grating,
+        [0.0, 1.0, 0.0]);
+    assert.ok(Math.abs(ordinary_projection.u - tilted_projection.u) > 0.1);
 }
 
 /** Validate wavelength and order-energy equations. */
@@ -207,6 +231,7 @@ function testShaderConstants()
          foil_math.TOTAL_DIFFRACTION_ENERGY],
         ["BASE_TRANSMITTED_PRINT_ENERGY",
          foil_math.TRANSMITTED_PRINT_ENERGY],
+        ["FOIL_DISORDER", foil_math.FOIL_DISORDER],
     ]);
     for(const [name, expected] of expected_constants)
     {

@@ -253,7 +253,7 @@ artwork. Its channels retain the physical v2 meanings from the BRDF design:
 |---|---|---|
 | red | groove spacing | linear scalar field |
 | green | grating orientation | periodic angular field |
-| blue | microstructure disorder | linear scalar field |
+| blue | local grating tilt | signed scalar field; byte 128 is neutral |
 | alpha | foil coverage | linear area fraction |
 
 The file is a data texture, not a color texture. The loader must continue to

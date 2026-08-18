@@ -55,13 +55,15 @@ function sampleDisorderedY(table, wavelength_um, disorder)
 }
 
 /** Reproduce the shader's scalar Y diffraction BRDF. */
-function diffractionBrdfY(table, light, view, spacing_um, disorder)
+function diffractionBrdfY(table, light, view, spacing_um, tilt)
 {
+    const frame = foil_math.tiltGratingFrame(
+        [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], tilt);
     const projection = foil_math.tangentProjection(
-        light, view, [0.0, 0.0, 1.0],
-        [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        light, view, frame.normal, frame.grating, [0.0, 1.0, 0.0]);
     const cross_response = foil_math.crossGrooveGaussian(
-        projection.v, foil_math.decodeCrossGrooveWidth(disorder));
+        projection.v,
+        foil_math.decodeCrossGrooveWidth(foil_math.FOIL_DISORDER));
     let result = 0.0;
     for(let order = 1; order <= 4; ++order)
     {
@@ -70,13 +72,14 @@ function diffractionBrdfY(table, light, view, spacing_um, disorder)
         result += foil_math.signedOrderEfficiency(order, 4)
                 * cross_response
                 * 1000.0 * spacing_um / order
-                * sampleDisorderedY(table, wavelength_um, disorder);
+                * sampleDisorderedY(
+                    table, wavelength_um, foil_math.FOIL_DISORDER);
     }
     return result;
 }
 
 /** Integrate the foil BRDF over outgoing hemisphere directions. */
-function integrateFoil(table, light, spacing_um, disorder)
+function integrateFoil(table, light, spacing_um, tilt)
 {
     let reflected_energy = foil_math.TRANSMITTED_PRINT_ENERGY;
     let specular_energy = 0.0;
@@ -101,7 +104,7 @@ function integrateFoil(table, light, spacing_um, disorder)
             specular_energy += specularBrdf(light, view)
                              * integration_weight;
             diffraction_energy += diffractionBrdfY(
-                table, light, view, spacing_um, disorder)
+                table, light, view, spacing_um, tilt)
                                 * integration_weight;
         }
     }
@@ -118,13 +121,17 @@ for(const incident_degrees of [0.0, 30.0, 60.0])
     const light = [Math.sin(angle), 0.0, Math.cos(angle)];
     for(const spacing_um of [0.60, 1.10, 2.50])
     {
-        const result = integrateFoil(table, light, spacing_um, 0.15);
-        assert.ok(Number.isFinite(result.reflected_energy));
-        assert.ok(result.reflected_energy <= 1.10,
-                  `Energy ${result.reflected_energy} at `
-                  + `${incident_degrees} degrees, d=${spacing_um}`);
-        assert.ok(result.specular_energy <= foil_math.ZERO_ORDER_ENERGY
-                  * 1.02);
+        for(const tilt of [-Math.PI / 12.0, 0.0, Math.PI / 12.0])
+        {
+            const result = integrateFoil(table, light, spacing_um, tilt);
+            assert.ok(Number.isFinite(result.reflected_energy));
+            assert.ok(result.reflected_energy <= 1.10,
+                      `Energy ${result.reflected_energy} at `
+                      + `${incident_degrees} degrees, d=${spacing_um}, `
+                      + `tilt=${tilt}`);
+            assert.ok(result.specular_energy <= foil_math.ZERO_ORDER_ENERGY
+                      * 1.02);
+        }
     }
 }
 console.log("brdf_energy_test: passed");

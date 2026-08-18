@@ -4,6 +4,7 @@ const {
     clearCardLink,
     encodeCardLink,
     parseCardLink,
+    parseUniformControl,
     validateRemoteImageUrl,
 } = require("../card_link.js");
 
@@ -25,19 +26,24 @@ function testCardLinkRoundTrip()
     assert.deepEqual(parseCardLink(encoded), {
         artwork_url,
         control_url,
+        control_color: null,
     });
 }
 
-/** Omit the controls parameter for a deliberately non-foil card. */
-function testCardLinkWithoutControls()
+/** Preserve uniform controls when no control image URL is available. */
+function testCardLinkWithUniformControls()
 {
+    const control_color = [155, 64, 8, 255];
     const encoded = encodeCardLink(
-        "https://cards.example/", "https://images.example/art.webp", null);
+        "https://cards.example/", "https://images.example/art.webp", null,
+        control_color);
     const parameters = new URLSearchParams(new URL(encoded).hash.slice(1));
     assert.equal(parameters.has("controls"), false);
+    assert.equal(parameters.get("rgba"), "155,64,8,255");
     assert.deepEqual(parseCardLink(encoded), {
         artwork_url: "https://images.example/art.webp",
         control_url: null,
+        control_color,
     });
 }
 
@@ -71,6 +77,20 @@ function testInvalidCardLinks()
             "https://cards.example/#v=2&artwork=https%3A%2F%2Fa.test%2Fa"
             + "&controls=https%3A%2F%2Fa.test%2Fc");
     }, /version/);
+    assert.throws(function rejectMalformedUniformControl()
+    {
+        parseUniformControl("0,1,2,256");
+    }, /four comma-separated bytes/);
+    assert.throws(function rejectAmbiguousUniformWhitespace()
+    {
+        parseUniformControl("0, 1,2,3");
+    }, /four comma-separated bytes/);
+    assert.throws(function rejectAmbiguousControls()
+    {
+        parseCardLink(
+            "https://cards.example/#v=1&artwork=https%3A%2F%2Fa.test%2Fa"
+            + "&controls=https%3A%2F%2Fa.test%2Fc&rgba=0%2C0%2C0%2C0");
+    }, /both/);
     assert.throws(function rejectBlobUrl()
     {
         validateRemoteImageUrl("blob:https://cards.example/id", "Artwork");
@@ -90,7 +110,7 @@ function testClearCardLink()
 }
 
 testCardLinkRoundTrip();
-testCardLinkWithoutControls();
+testCardLinkWithUniformControls();
 testUnrelatedFragment();
 testInvalidCardLinks();
 testClearCardLink();

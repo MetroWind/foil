@@ -17,7 +17,7 @@ equations for the microscopic foil structure at runtime.
 ## Baseline scope
 
 The baseline has one foil kind, `physical_linear`. Its packed fields describe
-physical groove spacing, microstructure disorder, grating orientation, and
+physical groove spacing, grating orientation, local grating tilt, and
 coverage. Wavelength conversion uses CIE color-matching data, illumination
 comes from a finite disk, and output uses explicit exposure, perceptual gamut
 mapping, and the exact sRGB transfer function. A physical distribution of many
@@ -309,15 +309,15 @@ at the endpoints provide the natural fade.
 
 An infinite perfect grating produces delta-function orders. Real transferred
 foil has finite coherent regions, imperfect periods, local curvature, and
-orientation variation. The blue control field encodes a single
-microstructure-disorder value $b\in[0,1]$ from which the initial renderer
-derives two correlated widths.
+orientation variation. The current renderer fixes its internal disorder value
+at $q=1$, equivalent to the former blue byte 255, and derives two correlated
+widths from it.
 
 The cross-groove projected width is
 
 $$
-\sigma_p(b)=
-\operatorname{mix}(0.008,0.16,b^2).
+\sigma_p(q)=
+\operatorname{mix}(0.008,0.16,q^2).
 $$
 
 The cross-groove lobe is
@@ -331,7 +331,7 @@ $$
 The relative period spread is
 
 $$
-\rho_d(b)=\operatorname{mix}(0.003,0.08,b^2),
+\rho_d(q)=\operatorname{mix}(0.003,0.08,q^2),
 $$
 
 giving wavelength standard deviation
@@ -635,7 +635,7 @@ have the same dimensions and UV layout as the artwork.
 |---|---|---|
 | R | groove frequency | reciprocal physical groove spacing |
 | G | grating orientation | unoriented axis perpendicular to grooves |
-| B | disorder | correlated period and orientation/coherence spread |
+| B | local grating tilt | signed microscopic frame rotation |
 | A | coverage | area fraction using the foil BRDF |
 
 The texture remains a data texture:
@@ -687,10 +687,25 @@ zero- and 180-degree boundary.
 
 ### Blue-channel decoding
 
-Let $b=B_8/255$. The shader uses $b^2$ in the width equations so artists have
-more precision near coherent, narrow responses. Blue zero is still nonzero
-disorder; an exact delta response is neither stable nor properly sampled by a
-rasterizer.
+Let $b=B_8/255$. Blue controls a signed rotation about the local groove axis:
+
+$$
+\delta(b)=\frac{\pi}{12}(2b-1).
+$$
+
+The endpoints are therefore $-15^\circ$ and $+15^\circ$; byte 128 is the
+nearest 8-bit representation of zero. If $\mathbf g$ is the in-plane grating
+axis and $\mathbf n$ is the macroscopic card normal, the diffraction frame is
+
+$$
+\mathbf g'=\cos\delta\,\mathbf g+\sin\delta\,\mathbf n,
+\qquad
+\mathbf n'=\cos\delta\,\mathbf n-\sin\delta\,\mathbf g.
+$$
+
+The groove axis is unchanged. Only diffraction uses this microscopic frame;
+print lighting and macroscopic visibility continue to use $\mathbf n$. This
+makes spatial B fields shift the angle at which regions reveal their rainbow.
 
 ### Alpha-channel decoding
 
@@ -708,7 +723,8 @@ painting alpha rather than by receiving a separate intensity control.
 
 The baseline demo asset is `card_front_foil.png`. It uses a constant
 $d=1.10\,\mu\mathrm m$, encoded as red byte 155, with authored orientation,
-disorder, and coverage fields. A future artist-authored spacing field may vary
+neutral tilt, and coverage fields. A future artist-authored spacing field may
+vary
 red where the intended physical film genuinely changes groove frequency.
 Its front-only spatial layout is specified in
 [`design-2-textures.md`](design-2-textures.md).

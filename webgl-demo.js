@@ -117,29 +117,29 @@ class CardMaterialController
     }
 
     /** Decode both files and replace the front only after both succeed. */
-    async applyFiles(artwork_file, control_file)
+    async applyFiles(artwork_file, control_file, control_color)
     {
         const revision = ++this.load_revision;
         return this.installMaterial(
             PhysicalFoilMaterial.fromFiles(
-                this.gl, artwork_file, control_file,
+                this.gl, artwork_file, control_file, control_color,
                 this.card_scene.default_material.spectral_lut),
             revision, control_file != null);
     }
 
     /** Load two image URLs and replace the front after both succeed. */
-    async applyUrls(artwork_url, control_url)
+    async applyUrls(artwork_url, control_url, control_color)
     {
         const revision = ++this.load_revision;
         return this.installMaterial(
             PhysicalFoilMaterial.fromUrls(
-                this.gl, artwork_url, control_url,
+                this.gl, artwork_url, control_url, control_color,
                 this.card_scene.default_material.spectral_lut),
             revision, control_url != null);
     }
 
     /** Install one completed material unless newer work superseded it. */
-    async installMaterial(material_promise, revision, has_control)
+    async installMaterial(material_promise, revision, has_control_image)
     {
         const material = await material_promise;
         if(revision != this.load_revision)
@@ -151,7 +151,7 @@ class CardMaterialController
         return {
             artwork: material.artwork,
             control: material.foil_control,
-            has_control,
+            has_control_image,
         };
     }
 
@@ -160,6 +160,18 @@ class CardMaterialController
     {
         ++this.load_revision;
         this.card_scene.resetFrontMaterial();
+    }
+
+    /** Update installed uniform controls without reloading artwork. */
+    updateUniformControl(control_color)
+    {
+        return this.card_scene.front_material.setUniformControl(control_color);
+    }
+
+    /** Return whether the displayed material uses a control image. */
+    usesControlImage()
+    {
+        return !this.card_scene.front_material.foil_control.is_constant;
     }
 }
 
@@ -201,6 +213,13 @@ class CardImageUi
         this.control_url = document.getElementById("FoilControlUrl");
         this.artwork_meta = document.getElementById("ArtworkMeta");
         this.control_meta = document.getElementById("FoilControlMeta");
+        this.uniform_control = document.getElementById(
+            "UniformFoilControls");
+        this.control_sliders = ["Red", "Green", "Blue", "Alpha"].map(
+            function findChannelSlider(channel)
+            {
+                return document.getElementById(`Foil${channel}`);
+            });
         this.apply_button = document.getElementById("ApplyCardImages");
         this.reset_button = document.getElementById("ResetCardFiles");
         this.status = document.getElementById("UploadStatus");
@@ -216,6 +235,11 @@ class CardImageUi
             "input", this.updateSelection.bind(this));
         this.control_url.addEventListener(
             "input", this.updateSelection.bind(this));
+        for(const slider of this.control_sliders)
+        {
+            slider.addEventListener(
+                "input", this.updateUniformControl.bind(this));
+        }
         for(const mode_input of this.mode_inputs)
         {
             mode_input.addEventListener(
@@ -263,6 +287,64 @@ class CardImageUi
         }
     }
 
+    /** Return whether the active source mode specifies custom artwork. */
+    hasArtworkSelection()
+    {
+        return this.mode() == CARD_SOURCE_MODE.FILES
+            ? this.artwork_input.files[0] != null
+            : this.artwork_url.value.trim() != "";
+    }
+
+    /** Return whether selected or displayed controls come from an image. */
+    hasControlImage()
+    {
+        const selected_control = this.mode() == CARD_SOURCE_MODE.FILES
+            ? this.control_input.files[0] != null
+            : this.control_url.value.trim() != "";
+        return selected_control
+            || (!this.hasArtworkSelection()
+                && this.controller.usesControlImage());
+    }
+
+    /** Read the four normalized texture channels as exact 8-bit values. */
+    uniformControlColor()
+    {
+        return this.control_sliders.map(function readChannel(slider)
+        {
+            return Number(slider.value);
+        });
+    }
+
+    /** Update slider labels and select image or uniform control editing. */
+    updateUniformControls()
+    {
+        for(const slider of this.control_sliders)
+        {
+            document.getElementById(`${slider.id}Value`).value = slider.value;
+        }
+        this.uniform_control.disabled = this.is_busy
+            || this.hasControlImage();
+    }
+
+    /** Apply one slider edit immediately to an installed uniform material. */
+    updateUniformControl()
+    {
+        this.updateSelection();
+        const control_color = this.uniformControlColor();
+        if(!this.controller.updateUniformControl(control_color))
+        {
+            return;
+        }
+        if(this.mode() == CARD_SOURCE_MODE.URLS
+           && this.control_url.value.trim() == ""
+           && this.artwork_url.validity.valid
+           && this.artwork_url.value.trim() != "")
+        {
+            this.updateCardLink(
+                this.artwork_url.value.trim(), null);
+        }
+    }
+
     /** Refresh source metadata and whether the pair can be applied. */
     updateSelection()
     {
@@ -272,8 +354,9 @@ class CardImageUi
             ? "No file selected"
             : `${artwork_file.name} · ${formatFileSize(artwork_file.size)}`;
         this.control_meta.textContent = control_file == null
-            ? "No file selected · foil disabled"
+            ? "No file selected · using uniform controls"
             : `${control_file.name} · ${formatFileSize(control_file.size)}`;
+        this.updateUniformControls();
         const files_ready = artwork_file != null;
         const control_url_value = this.control_url.value.trim();
         const urls_ready = this.artwork_url.value.trim() != ""
@@ -314,9 +397,11 @@ class CardImageUi
             const textures = uses_files
                 ? await this.controller.applyFiles(
                     this.artwork_input.files[0],
-                    this.control_input.files[0] || null)
+                    this.control_input.files[0] || null,
+                    this.uniformControlColor())
                 : await this.controller.applyUrls(
-                    artwork_url, control_url);
+                    artwork_url, control_url,
+                    this.uniformControlColor());
             if(textures != null)
             {
                 this.updateCardLink(
@@ -325,10 +410,11 @@ class CardImageUi
                 this.showStatus(
                     `Rendered artwork ${textures.artwork.width}×`
                     + `${textures.artwork.height}`
-                    + (textures.has_control
+                    + (textures.has_control_image
                         ? ` with controls ${textures.control.width}×`
                           + `${textures.control.height}.`
-                        : " without foil controls."),
+                        : ` with uniform RGBA controls (`
+                          + `${this.uniformControlColor().join(", ")}).`),
                     "success");
             }
         }
@@ -369,6 +455,14 @@ class CardImageUi
         }).checked = true;
         this.artwork_url.value = card_link.artwork_url;
         this.control_url.value = card_link.control_url || "";
+        if(card_link.control_color != null)
+        {
+            this.control_sliders.forEach(function restoreChannel(
+                slider, index)
+            {
+                slider.value = card_link.control_color[index];
+            });
+        }
         this.updateMode();
         await this.applySelection();
     }
@@ -379,7 +473,8 @@ class CardImageUi
         const page_url = artwork_url == null
             ? clearCardLink(window.location.href)
             : encodeCardLink(
-                window.location.href, artwork_url, control_url);
+                window.location.href, artwork_url, control_url,
+                this.uniformControlColor());
         window.history.replaceState(null, "", page_url);
     }
 

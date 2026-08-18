@@ -248,6 +248,7 @@ class Texture
         this.cross_origin = cross_origin;
         this.gl = gl;
         this.disposed = false;
+        this.is_constant = false;
         this.ready = new Promise(function storeTextureCompletion(
             resolve, reject)
         {
@@ -331,10 +332,44 @@ class Texture
         const texture_options = Object.assign(
             {}, options, {placeholder_color: color});
         const texture = new Texture(gl, null, texture_options);
+        texture.is_constant = true;
         texture.width = 1;
         texture.height = 1;
         texture.resolve_load(texture);
         return texture;
+    }
+
+    /** Replace a ready constant texture texel without reallocating it. */
+    setConstantColor(color)
+    {
+        const is_valid = Array.isArray(color) && color.length == 4
+            && color.every(function validateTextureByte(value)
+            {
+                return Number.isInteger(value)
+                    && value >= 0 && value <= 255;
+            });
+        if(!this.is_constant || !is_valid || this.disposed)
+        {
+            throw(new Error(
+                "Only a live constant texture accepts four color bytes."));
+        }
+
+        const gl = this.gl;
+        const previous_active_texture = gl.getParameter(gl.ACTIVE_TEXTURE);
+        gl.activeTexture(gl.TEXTURE0);
+        const previous_texture = gl.getParameter(gl.TEXTURE_BINDING_2D);
+        try
+        {
+            gl.bindTexture(gl.TEXTURE_2D, this.texture);
+            gl.texSubImage2D(
+                gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA,
+                gl.UNSIGNED_BYTE, new Uint8Array(color));
+        }
+        finally
+        {
+            gl.bindTexture(gl.TEXTURE_2D, previous_texture);
+            gl.activeTexture(previous_active_texture);
+        }
     }
 
     /** Upload one decoded source while preserving global pixel-unpack state. */
@@ -603,8 +638,9 @@ class PhysicalFoilMaterial
         }.bind(this));
     }
 
-    /** Create a material from temporary browser files and a shared LUT. */
-    static async fromFiles(gl, artwork_file, control_file, spectral_lut)
+    /** Create a file material, using uniform controls when no map exists. */
+    static async fromFiles(gl, artwork_file, control_file, control_color,
+                           spectral_lut)
     {
         let artwork = null;
         let foil_control = null;
@@ -614,7 +650,7 @@ class PhysicalFoilMaterial
                 flip_y: true,
             });
             foil_control = control_file == null
-                ? Texture.constant(gl, [0, 0, 0, 0], {
+                ? Texture.constant(gl, control_color, {
                     role: TEXTURE_ROLE.DATA,
                 })
                 : await Texture.fromFile(gl, control_file, {
@@ -640,15 +676,16 @@ class PhysicalFoilMaterial
         }
     }
 
-    /** Create a material from CORS-enabled image URLs and a shared LUT. */
-    static async fromUrls(gl, artwork_url, control_url, spectral_lut)
+    /** Create a URL material, using uniform controls when no map exists. */
+    static async fromUrls(gl, artwork_url, control_url, control_color,
+                          spectral_lut)
     {
         const artwork = new Texture(gl, artwork_url, {
             cross_origin: "anonymous",
             flip_y: true,
         });
         const foil_control = control_url == null
-            ? Texture.constant(gl, [0, 0, 0, 0], {
+            ? Texture.constant(gl, control_color, {
                 role: TEXTURE_ROLE.DATA,
             })
             : new Texture(gl, control_url, {
@@ -678,6 +715,17 @@ class PhysicalFoilMaterial
         this.artwork.use(program, "u_artwork", 0);
         this.foil_control.use(program, "u_foil_control", 1);
         this.spectral_lut.use(program, 2);
+    }
+
+    /** Update uniform controls, returning false for image-backed controls. */
+    setUniformControl(control_color)
+    {
+        if(!this.foil_control.is_constant)
+        {
+            return false;
+        }
+        this.foil_control.setConstantColor(control_color);
+        return true;
     }
 
     /** Release owned artwork, controls, and any unshared spectral table. */

@@ -124,6 +124,7 @@ function testUniformLookups()
 function testMaterialModes()
 {
     const calls = [];
+    let uniform_control = null;
     const gl = {
         uniform1i: function uploadInteger(location, value)
         {
@@ -143,7 +144,14 @@ function testMaterialModes()
     const physical = Object.create(PhysicalFoilMaterial.prototype);
     physical.gl = gl;
     physical.artwork = {use: function useArtwork() {}};
-    physical.foil_control = {use: function useControls() {}};
+    physical.foil_control = {
+        is_constant: true,
+        use: function useControls() {},
+        setConstantColor: function setConstantColor(color)
+        {
+            uniform_control = color;
+        },
+    };
     physical.spectral_lut = {use: function useSpectrum() {}};
     const solid = new SolidColorMaterial(gl, [0.5, 0.5, 0.5]);
 
@@ -166,6 +174,10 @@ function testMaterialModes()
     {
         return new SolidColorMaterial(gl, [0.0, 0.0, 2.0]);
     });
+    assert.equal(physical.setUniformControl([155, 0, 8, 255]), true);
+    assert.deepEqual(uniform_control, [155, 0, 8, 255]);
+    physical.foil_control.is_constant = false;
+    assert.equal(physical.setUniformControl([0, 0, 0, 0]), false);
 }
 
 /** Ensure texture disposal releases a GPU allocation exactly once. */
@@ -212,10 +224,13 @@ function testBitmapDecodeOptions()
     });
 }
 
-/** Represent omitted foil controls with one transparent black data texel. */
-function testNoFoilTexture()
+/** Represent uniform foil controls with one exact RGBA data texel. */
+function testConstantControlTexture()
 {
     let uploaded_color = null;
+    let updated_color = null;
+    let active_texture = 0;
+    let bound_texture = null;
     const gl = {
         TEXTURE0: 0,
         TEXTURE_2D: 1,
@@ -228,25 +243,44 @@ function testNoFoilTexture()
         RGBA8: 8,
         RGBA: 9,
         UNSIGNED_BYTE: 10,
+        ACTIVE_TEXTURE: 11,
+        TEXTURE_BINDING_2D: 12,
         createTexture: function createTexture()
         {
             return {};
         },
-        activeTexture: function activeTexture() {},
-        bindTexture: function bindTexture() {},
+        activeTexture: function activeTexture(value)
+        {
+            active_texture = value;
+        },
+        bindTexture: function bindTexture(unused_target, value)
+        {
+            bound_texture = value;
+        },
+        getParameter: function getParameter(name)
+        {
+            return name == this.ACTIVE_TEXTURE
+                ? active_texture : bound_texture;
+        },
         texParameteri: function texParameteri() {},
         texImage2D: function uploadTexture()
         {
             uploaded_color = Array.from(arguments[8]);
         },
+        texSubImage2D: function updateTexture()
+        {
+            updated_color = Array.from(arguments[8]);
+        },
         deleteTexture: function deleteTexture() {},
     };
     const texture = Texture.constant(
-        gl, [0, 0, 0, 0], {role: TEXTURE_ROLE.DATA});
-    assert.deepEqual(uploaded_color, [0, 0, 0, 0]);
+        gl, [155, 64, 8, 255], {role: TEXTURE_ROLE.DATA});
+    assert.deepEqual(uploaded_color, [155, 64, 8, 255]);
     assert.equal(texture.width, 1);
     assert.equal(texture.height, 1);
     assert.equal(texture.role, TEXTURE_ROLE.DATA);
+    texture.setConstantColor([32, 64, 96, 128]);
+    assert.deepEqual(updated_color, [32, 64, 96, 128]);
     assert.throws(function rejectInvalidConstantTexture()
     {
         Texture.constant(gl, [0, 0, 0], {role: TEXTURE_ROLE.DATA});
@@ -354,6 +388,49 @@ function testMaterialShaderContract()
         "if(u_material_kind == MATERIAL_SOLID_COLOR)"));
     assert.ok(source.includes(
         "else if(u_material_kind == MATERIAL_PHYSICAL_FOIL)"));
+}
+
+/** Keep foil gamut mapping continuous at zero and partial coverage. */
+function testCoverageGamutContract()
+{
+    const source = fs.readFileSync("frag-shader.glsl", "utf8");
+    assert.ok(source.includes(
+        "vec3 applyFoilGamutMap(vec3 linear_rgb, float coverage)"));
+    assert.ok(source.includes(
+        "return mix(ordinary_rgb, mapped_rgb, clamp(coverage, 0.0, 1.0));"));
+    assert.ok(source.includes(
+        "tone_mapped, control.coverage);"));
+    assert.ok(!source.includes(
+        "control.coverage > 0.0\n"
+        + "                        ? perceptualGamutMap(tone_mapped)"));
+}
+
+/** Keep authored foil coverage on the intentional artistic response curve. */
+function testArtisticCoverageContract()
+{
+    const source = fs.readFileSync("frag-shader.glsl", "utf8");
+    assert.ok(source.includes(
+        "const float ARTISTIC_COVERAGE_EXPONENT = 2.2;"));
+    assert.ok(source.includes(
+        "float decodeArtisticCoverage(float encoded_coverage)"));
+    assert.ok(source.includes(
+        "control.coverage = decodeArtisticCoverage(coverage);"));
+}
+
+/** Keep blue-channel tilt and fixed disorder synchronized with the shader. */
+function testGratingTiltContract()
+{
+    const source = fs.readFileSync("frag-shader.glsl", "utf8");
+    assert.ok(source.includes(
+        "const float MAX_GRATING_TILT_RADIANS = PI / 12.0;"));
+    assert.ok(source.includes("const float FOIL_DISORDER = 1.0;"));
+    assert.ok(source.includes(
+        "float grating_tilt;"));
+    assert.ok(source.includes(
+        "control.grating_tilt = MAX_GRATING_TILT_RADIANS"));
+    assert.ok(source.includes(
+        "vec3 tilted_grating = tilt_cosine * grating + tilt_sine * normal;"));
+    assert.ok(!source.includes("control.disorder"));
 }
 
 /** Validate tangent generation for every triangle in the production model. */
@@ -480,9 +557,12 @@ testUniformLookups();
 testMaterialModes();
 testTextureDisposal();
 testBitmapDecodeOptions();
-testNoFoilTexture();
+testConstantControlTexture();
 testCorsTextureSetup();
 testMaterialShaderContract();
+testCoverageGamutContract();
+testArtisticCoverageContract();
+testGratingTiltContract();
 testCardGeometry();
 testCardPartition();
 testCardPartitionErrors();

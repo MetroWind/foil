@@ -81,10 +81,46 @@
                             address with a shareable card link.
                         </p>
                     </div>
-                    <p class="control_hint">
-                        Control channels: reveal R, orientation G,
-                        reveal width B, coverage A. Omit the map for no foil.
-                    </p>
+                    <fieldset id="UniformFoilControls"
+                              class="uniform_controls">
+                        <legend>Uniform foil controls</legend>
+                        <p class="control_hint">
+                            Used across the whole front when no control image
+                            is specified. Values are stored as 8-bit channels.
+                        </p>
+                        <label class="channel_slider" for="FoilRed">
+                            <span>R · groove frequency</span>
+                            <output id="FoilRedValue" for="FoilRed">
+                                155
+                            </output>
+                            <input id="FoilRed" type="range" min="0"
+                                   max="255" step="1" value="155" />
+                        </label>
+                        <label class="channel_slider" for="FoilGreen">
+                            <span>G · orientation</span>
+                            <output id="FoilGreenValue" for="FoilGreen">
+                                0
+                            </output>
+                            <input id="FoilGreen" type="range" min="0"
+                                   max="255" step="1" value="0" />
+                        </label>
+                        <label class="channel_slider" for="FoilBlue">
+                            <span>B · local grating tilt</span>
+                            <output id="FoilBlueValue" for="FoilBlue">
+                                128
+                            </output>
+                            <input id="FoilBlue" type="range" min="0"
+                                   max="255" step="1" value="128" />
+                        </label>
+                        <label class="channel_slider" for="FoilAlpha">
+                            <span>A · coverage</span>
+                            <output id="FoilAlphaValue" for="FoilAlpha">
+                                255
+                            </output>
+                            <input id="FoilAlpha" type="range" min="0"
+                                   max="255" step="1" value="255" />
+                        </label>
+                    </fieldset>
                     <div class="form_actions">
                         <button id="ApplyCardImages" type="submit">
                             Preview images
